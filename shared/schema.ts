@@ -31,6 +31,7 @@ export const products = pgTable("products", {
   stockShortReason: text("stock_short_reason"),
   barcode: varchar("barcode", { length: 255 }),
   sizePrices: jsonb("size_prices"), // JSON object for size-based pricing: {"S": "100", "M": "150", "L": "200"}
+  sizePurchasePrices: jsonb("size_purchase_prices"), // Purchase cost per size when size-based pricing: {"S": "50", "M": "75", "L": "100"}
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
@@ -39,6 +40,7 @@ export const insertProductSchema = createInsertSchema(products).omit({
   createdAt: true,
 }).extend({
   sizePrices: z.record(z.string(), z.string()).optional().nullable(), // Optional size-based pricing: {"S": "100", "M": "150", "L": "200"}
+  sizePurchasePrices: z.record(z.string(), z.string()).optional().nullable(), // Optional purchase cost per size
 });
 
 export type InsertProduct = z.infer<typeof insertProductSchema>;

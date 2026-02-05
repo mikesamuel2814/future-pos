@@ -63,7 +63,7 @@ export function ProductCard({ product, onAddToOrder, availableStock }: ProductCa
         <h3 className="font-medium text-xs sm:text-sm mb-1 line-clamp-2 break-words leading-tight" data-testid={`text-product-name-${product.id}`}>
           {product.name}
         </h3>
-        {/* Show size badges for products with size pricing (any unit type) */}
+        {/* Show size badges for products with size pricing (any unit type); hide single price when size-priced */}
         {product.sizePrices && (() => {
           const sizePrices = product.sizePrices as Record<string, string> | null | undefined;
           if (sizePrices && Object.keys(sizePrices).length > 0) {
@@ -86,9 +86,11 @@ export function ProductCard({ product, onAddToOrder, availableStock }: ProductCa
           return null;
         })()}
         <div className="flex items-center justify-between mt-auto">
-          <p className="text-sm sm:text-base font-semibold text-primary font-mono" data-testid={`text-product-price-${product.id}`}>
-            ${parseFloat(product.price).toFixed(2)}
-          </p>
+          {(!product.sizePrices || Object.keys((product.sizePrices as Record<string, string>) || {}).length === 0) && (
+            <p className="text-sm sm:text-base font-semibold text-primary font-mono" data-testid={`text-product-price-${product.id}`}>
+              ${parseFloat(product.price).toFixed(2)}
+            </p>
+          )}
           {isOutOfStock && (
             <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
               Out of Stock

@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-# Deployment flags (passed from local script)
-DEPLOY_BFC=true
-DEPLOY_ADORA=true
-DEPLOY_SEA=true
-DEPLOY_COFFEEHOUSE=true
-DEPLOY_BAR=true
-DEPLOY_CENTRAL=true
+# Deployment flags: pass as arguments (e.g. sudo bash deploy-pos-server.sh true true false false false)
+# so they work even when sudo strips environment variables. Defaults: all true if no args.
+DEPLOY_BFC=${1:-true}
+DEPLOY_ADORA=${2:-true}
+DEPLOY_SEA=${3:-true}
+DEPLOY_COFFEEHOUSE=${4:-true}
+DEPLOY_BAR=${5:-true}
 
 echo "=========================================="
 echo "Server-side Deployment"
@@ -18,8 +18,29 @@ echo "Deploying:"
 [ "$DEPLOY_SEA" = "true" ] && echo "  ✓ Sea POS" || echo "  ✗ Sea POS (skipped)"
 [ "$DEPLOY_COFFEEHOUSE" = "true" ] && echo "  ✓ Coffeehouse POS" || echo "  ✗ Coffeehouse POS (skipped)"
 [ "$DEPLOY_BAR" = "true" ] && echo "  ✓ Bar POS" || echo "  ✗ Bar POS (skipped)"
-[ "$DEPLOY_CENTRAL" = "true" ] && echo "  ✓ Central Dashboard" || echo "  ✗ Central Dashboard (skipped)"
 echo "=========================================="
+
+# Backup all POS PostgreSQL databases before any deploy (preserves existing products/data)
+echo ""
+echo "=========================================="
+echo "Backing up PostgreSQL databases..."
+echo "=========================================="
+BACKUP_PARENT="/var/backups/pos-db-backups"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP_DIR="$BACKUP_PARENT/$TIMESTAMP"
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_PARENT" 2>/dev/null || true
+for db in bfcpos_db adorapos_db seapos_db coffeehouse_db barpos_db; do
+  if sudo -u postgres psql -lqt 2>/dev/null | cut -d '|' -f 1 | grep -qw "$db"; then
+    echo "  Backing up $db..."
+    sudo -u postgres pg_dump "$db" 2>/dev/null | gzip > "$BACKUP_DIR/${db}.sql.gz" && echo "    ✓ $db" || echo "    ✗ $db failed"
+  else
+    echo "  Skipping $db (does not exist)"
+  fi
+done
+echo "✓ Backups saved to $BACKUP_DIR"
+echo "=========================================="
+echo ""
 
 # Function to free up memory
 free_memory() {
@@ -55,8 +76,7 @@ mkdir -p /var/www/adorapos /var/log/adorapos /var/backups/adorapos
 mkdir -p /var/www/seapos /var/log/seapos /var/backups/seapos
 mkdir -p /var/www/coffeehouse /var/log/coffeehouse /var/backups/coffeehouse
 mkdir -p /var/www/bar /var/log/bar /var/backups/bar
-mkdir -p /var/www/central /var/log/central /var/backups/central
-mkdir -p /var/www/bfcpos/uploads  /var/www/adorapos/uploads /var/www/seapos/uploads /var/www/coffeehouse/uploads /var/www/bar/uploads /var/www/central/uploads
+mkdir -p /var/www/bfcpos/uploads  /var/www/adorapos/uploads /var/www/seapos/uploads /var/www/coffeehouse/uploads /var/www/bar/uploads
 # Set ownership - split into separate commands to avoid memory issues
 chown -R nodejs:nodejs /var/www/bfcpos || echo "Warning: Failed to chown /var/www/bfcpos"
 chown -R nodejs:nodejs /var/log/bfcpos || echo "Warning: Failed to chown /var/log/bfcpos"
@@ -73,10 +93,6 @@ chown -R nodejs:nodejs /var/backups/coffeehouse || echo "Warning: Failed to chow
 chown -R nodejs:nodejs /var/www/bar || echo "Warning: Failed to chown /var/www/bar"
 chown -R nodejs:nodejs /var/log/bar || echo "Warning: Failed to chown /var/log/bar"
 chown -R nodejs:nodejs /var/backups/bar || echo "Warning: Failed to chown /var/backups/bar"
-chown -R nodejs:nodejs /var/www/central || echo "Warning: Failed to chown /var/www/central"
-chown -R nodejs:nodejs /var/log/central || echo "Warning: Failed to chown /var/log/central"
-chown -R nodejs:nodejs /var/backups/central || echo "Warning: Failed to chown /var/backups/central"
-
 # Check if PostgreSQL is installed
 if ! command -v psql &> /dev/null; then
     echo "PostgreSQL not found. Installing..."
@@ -94,7 +110,6 @@ sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_database WHERE datname =
 sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_database WHERE datname = 'seapos_db'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE DATABASE seapos_db" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_database WHERE datname = 'coffeehouse_db'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE DATABASE coffeehouse_db" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_database WHERE datname = 'barpos_db'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE DATABASE barpos_db" 2>/dev/null || true
-sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_database WHERE datname = 'central_pos_db'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE DATABASE central_pos_db" 2>/dev/null || true
 
 # Create users if they don't exist
 sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_user WHERE usename = 'bfcpos_user'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE USER bfcpos_user WITH PASSWORD 'BfcPOS2024!Secure'" 2>/dev/null || true
@@ -102,7 +117,6 @@ sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_user WHERE usename = 'ad
 sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_user WHERE usename = 'seapos_user'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE USER seapos_user WITH PASSWORD 'SeaPOS2024!Secure'" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_user WHERE usename = 'coffeehouse_user'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE USER coffeehouse_user WITH PASSWORD 'CoffeehousePOS2024!Secure'" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_user WHERE usename = 'barpos_user'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE USER barpos_user WITH PASSWORD 'BarPOS2024!Secure'" 2>/dev/null || true
-sudo -u postgres env PWD=/tmp psql -c "SELECT 1 FROM pg_user WHERE usename = 'central_user'" 2>/dev/null | grep -q 1 || sudo -u postgres env PWD=/tmp psql -c "CREATE USER central_user WITH PASSWORD 'CentralPOS2024!Secure'" 2>/dev/null || true
 
 # Grant privileges
 sudo -u postgres env PWD=/tmp psql -c "GRANT ALL PRIVILEGES ON DATABASE bfcpos_db TO bfcpos_user" 2>/dev/null || true
@@ -110,7 +124,6 @@ sudo -u postgres env PWD=/tmp psql -c "GRANT ALL PRIVILEGES ON DATABASE adorapos
 sudo -u postgres env PWD=/tmp psql -c "GRANT ALL PRIVILEGES ON DATABASE seapos_db TO seapos_user" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -c "GRANT ALL PRIVILEGES ON DATABASE coffeehouse_db TO coffeehouse_user" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -c "GRANT ALL PRIVILEGES ON DATABASE barpos_db TO barpos_user" 2>/dev/null || true
-sudo -u postgres env PWD=/tmp psql -c "GRANT ALL PRIVILEGES ON DATABASE central_pos_db TO central_user" 2>/dev/null || true
 
 # Connect to each database and grant schema privileges
 sudo -u postgres env PWD=/tmp psql -d bfcpos_db -c "GRANT ALL ON SCHEMA public TO bfcpos_user" 2>/dev/null || true
@@ -128,9 +141,6 @@ sudo -u postgres env PWD=/tmp psql -d coffeehouse_db -c "ALTER DEFAULT PRIVILEGE
 sudo -u postgres env PWD=/tmp psql -d barpos_db -c "GRANT ALL ON SCHEMA public TO barpos_user" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -d barpos_db -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO barpos_user" 2>/dev/null || true
 sudo -u postgres env PWD=/tmp psql -d barpos_db -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO barpos_user" 2>/dev/null || true
-sudo -u postgres env PWD=/tmp psql -d central_pos_db -c "GRANT ALL ON SCHEMA public TO central_user" 2>/dev/null || true
-sudo -u postgres env PWD=/tmp psql -d central_pos_db -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO central_user" 2>/dev/null || true
-sudo -u postgres env PWD=/tmp psql -d central_pos_db -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO central_user" 2>/dev/null || true
 
 # Deploy BFC POS
 if [ "$DEPLOY_BFC" = "true" ]; then
@@ -164,14 +174,21 @@ STARTSH
 chmod +x start.sh
 
 if [ ! -f ".env.production" ]; then
-    echo "Creating .env.production for BFC POS..."
-    SESSION_SECRET=$(openssl rand -base64 32)
-    cat > .env.production << ENVEOF
+    echo "Creating .env.production for BFC POS from example..."
+    if [ -f "env.production.bfc.example" ]; then
+        cp env.production.bfc.example .env.production
+        SESSION_SECRET=$(openssl rand -base64 32)
+        sed -i "s|SESSION_SECRET=.*|SESSION_SECRET=$SESSION_SECRET|" .env.production
+    else
+        SESSION_SECRET=$(openssl rand -base64 32)
+        cat > .env.production << ENVEOF
 DATABASE_URL=postgresql://bfcpos_user:BfcPOS2024!Secure@localhost:5432/bfcpos_db
 SESSION_SECRET=$SESSION_SECRET
 PORT=7050
 NODE_ENV=production
+CENTRAL_DASHBOARD_API_KEY=central-dashboard-2024-secure-key
 ENVEOF
+    fi
     chmod 600 .env.production
 fi
 
@@ -181,7 +198,7 @@ sudo -u nodejs bash -c "cd /var/www/bfcpos && rm -rf node_modules" 2>/dev/null |
 chown -R nodejs:nodejs /var/www/bfcpos 2>/dev/null || echo "Warning: Failed to chown /var/www/bfcpos"
 check_memory
 
-echo "Installing production dependencies only..."
+echo "Installing all dependencies (full install)..."
 MAX_RETRIES=5
 RETRY_COUNT=0
 INSTALL_SUCCESS=false
@@ -192,10 +209,10 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$INSTALL_SUCCESS" = false ]; do
         check_memory
         sleep 2
     fi
-    if sudo -u nodejs bash -c "cd /var/www/bfcpos && npm install --omit=dev --no-audit --no-fund --prefer-offline" 2>&1; then
+    if sudo -u nodejs bash -c "cd /var/www/bfcpos && npm install --no-audit --no-fund --prefer-offline" 2>&1; then
         if sudo -u nodejs bash -c "cd /var/www/bfcpos && test -d node_modules/express" 2>/dev/null; then
             INSTALL_SUCCESS=true
-            echo "✓ Production dependencies installed successfully"
+            echo "✓ Dependencies installed successfully"
         else
             echo "⚠ Installation incomplete, missing packages detected"
             RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -210,11 +227,14 @@ if [ "$INSTALL_SUCCESS" = false ]; then
     exit 1
 fi
 
+echo "Building application (using .env.production)..."
+sudo -u nodejs bash -c "set -a && source /var/www/bfcpos/.env.production && set +a && cd /var/www/bfcpos && npm run build" || { echo "ERROR: Build failed"; exit 1; }
+
 if [ ! -d "/var/www/bfcpos/dist/public" ] || [ ! -f "/var/www/bfcpos/dist/index.js" ]; then
-    echo "ERROR: Pre-built dist folder not found! dist/public or dist/index.js missing."
+    echo "ERROR: Build did not produce dist/public or dist/index.js"
     exit 1
 fi
-echo "✓ Using pre-built application (no server-side build needed)"
+echo "✓ Build completed"
 
 echo "Running database migrations..."
 sudo -u nodejs bash -c "set -a && source /var/www/bfcpos/.env.production && MIGRATION_QUIET=1 && set +a && cd /var/www/bfcpos && npm run db:migrate:all" || echo "Warning: Migration had issues, but continuing..."
@@ -239,6 +259,14 @@ cd /var/www/adorapos
 echo "Extracting package..."
 tar -xzf /tmp/adorapos-deploy.tar.gz --overwrite
 
+if [ -f "ecosystem-adora.config.cjs" ] && [ ! -f "ecosystem.config.cjs" ]; then
+    cp ecosystem-adora.config.cjs ecosystem.config.cjs
+fi
+if [ -f "start-bfc.sh" ] && [ ! -f "start.sh" ]; then
+    cp start-bfc.sh start.sh
+    chmod +x start.sh
+fi
+
 cat > start.sh << 'STARTSH'
 #!/bin/bash
 # Adora POS System - Startup Wrapper Script
@@ -252,14 +280,21 @@ STARTSH
 chmod +x start.sh
 
 if [ ! -f ".env.production" ]; then
-    echo "Creating .env.production for Adora POS..."
-    SESSION_SECRET=$(openssl rand -base64 32)
-    cat > .env.production << ENVEOF
+    echo "Creating .env.production for Adora POS from example..."
+    if [ -f "env.production.adora.example" ]; then
+        cp env.production.adora.example .env.production
+        SESSION_SECRET=$(openssl rand -base64 32)
+        sed -i "s|SESSION_SECRET=.*|SESSION_SECRET=$SESSION_SECRET|" .env.production
+    else
+        SESSION_SECRET=$(openssl rand -base64 32)
+        cat > .env.production << ENVEOF
 DATABASE_URL=postgresql://adorapos_user:AdoraPOS2024!Secure@localhost:5432/adorapos_db
 SESSION_SECRET=$SESSION_SECRET
 PORT=7060
 NODE_ENV=production
+CENTRAL_DASHBOARD_API_KEY=central-dashboard-2024-secure-key
 ENVEOF
+    fi
     chmod 600 .env.production
 fi
 
@@ -270,7 +305,7 @@ chown -R nodejs:nodejs /var/www/adorapos 2>/dev/null || echo "Warning: Failed to
 free_memory
 check_memory
 
-echo "Installing production dependencies only..."
+echo "Installing all dependencies (full install)..."
 MAX_RETRIES=5
 RETRY_COUNT=0
 INSTALL_SUCCESS=false
@@ -281,10 +316,10 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$INSTALL_SUCCESS" = false ]; do
         check_memory
         sleep 2
     fi
-    if sudo -u nodejs bash -c "cd /var/www/adorapos && npm install --omit=dev --no-audit --no-fund --prefer-offline" 2>&1; then
+    if sudo -u nodejs bash -c "cd /var/www/adorapos && npm install --no-audit --no-fund --prefer-offline" 2>&1; then
         if sudo -u nodejs bash -c "cd /var/www/adorapos && test -d node_modules/express" 2>/dev/null; then
             INSTALL_SUCCESS=true
-            echo "✓ Production dependencies installed successfully"
+            echo "✓ Dependencies installed successfully"
         else
             RETRY_COUNT=$((RETRY_COUNT + 1))
         fi
@@ -298,11 +333,14 @@ if [ "$INSTALL_SUCCESS" = false ]; then
     exit 1
 fi
 
+echo "Building application (using .env.production)..."
+sudo -u nodejs bash -c "set -a && source /var/www/adorapos/.env.production && set +a && cd /var/www/adorapos && npm run build" || { echo "ERROR: Build failed"; exit 1; }
+
 if [ ! -d "/var/www/adorapos/dist/public" ] || [ ! -f "/var/www/adorapos/dist/index.js" ]; then
-    echo "ERROR: Pre-built dist folder not found!"
+    echo "ERROR: Build did not produce dist/public or dist/index.js"
     exit 1
 fi
-echo "✓ Using pre-built application"
+echo "✓ Build completed"
 
 echo "Running database migrations..."
 sudo -u nodejs bash -c "set -a && source /var/www/adorapos/.env.production && MIGRATION_QUIET=1 && set +a && cd /var/www/adorapos && npm run db:migrate:all" || echo "Warning: Migration had issues, but continuing..."
@@ -326,6 +364,14 @@ cd /var/www/seapos
 echo "Extracting package..."
 tar -xzf /tmp/seapos-deploy.tar.gz --overwrite
 
+if [ -f "ecosystem-sea.config.cjs" ] && [ ! -f "ecosystem.config.cjs" ]; then
+    cp ecosystem-sea.config.cjs ecosystem.config.cjs
+fi
+if [ -f "start-bfc.sh" ] && [ ! -f "start.sh" ]; then
+    cp start-bfc.sh start.sh
+    chmod +x start.sh
+fi
+
 cat > start.sh << 'STARTSH'
 #!/bin/bash
 # Sea POS System - Startup Wrapper Script
@@ -339,14 +385,21 @@ STARTSH
 chmod +x start.sh
 
 if [ ! -f ".env.production" ]; then
-    echo "Creating .env.production for Sea POS..."
-    SESSION_SECRET=$(openssl rand -base64 32)
-    cat > .env.production << ENVEOF
+    echo "Creating .env.production for Sea POS from example..."
+    if [ -f "env.production.sea.example" ]; then
+        cp env.production.sea.example .env.production
+        SESSION_SECRET=$(openssl rand -base64 32)
+        sed -i "s|SESSION_SECRET=.*|SESSION_SECRET=$SESSION_SECRET|" .env.production
+    else
+        SESSION_SECRET=$(openssl rand -base64 32)
+        cat > .env.production << ENVEOF
 DATABASE_URL=postgresql://seapos_user:SeaPOS2024!Secure@localhost:5432/seapos_db
 SESSION_SECRET=$SESSION_SECRET
 PORT=7070
 NODE_ENV=production
+CENTRAL_DASHBOARD_API_KEY=central-dashboard-2024-secure-key
 ENVEOF
+    fi
     chmod 600 .env.production
 fi
 
@@ -357,7 +410,7 @@ chown -R nodejs:nodejs /var/www/seapos 2>/dev/null || echo "Warning: Failed to c
 free_memory
 check_memory
 
-echo "Installing production dependencies only..."
+echo "Installing all dependencies (full install)..."
 MAX_RETRIES=5
 RETRY_COUNT=0
 INSTALL_SUCCESS=false
@@ -367,10 +420,10 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$INSTALL_SUCCESS" = false ]; do
         check_memory
         sleep 2
     fi
-    if sudo -u nodejs bash -c "cd /var/www/seapos && npm install --omit=dev --no-audit --no-fund --prefer-offline" 2>&1; then
+    if sudo -u nodejs bash -c "cd /var/www/seapos && npm install --no-audit --no-fund --prefer-offline" 2>&1; then
         if sudo -u nodejs bash -c "cd /var/www/seapos && test -d node_modules/express" 2>/dev/null; then
             INSTALL_SUCCESS=true
-            echo "✓ Production dependencies installed successfully"
+            echo "✓ Dependencies installed successfully"
         else
             RETRY_COUNT=$((RETRY_COUNT + 1))
         fi
@@ -384,11 +437,14 @@ if [ "$INSTALL_SUCCESS" = false ]; then
     exit 1
 fi
 
+echo "Building application (using .env.production)..."
+sudo -u nodejs bash -c "set -a && source /var/www/seapos/.env.production && set +a && cd /var/www/seapos && npm run build" || { echo "ERROR: Build failed"; exit 1; }
+
 if [ ! -d "/var/www/seapos/dist/public" ] || [ ! -f "/var/www/seapos/dist/index.js" ]; then
-    echo "ERROR: Pre-built dist folder not found!"
+    echo "ERROR: Build did not produce dist/public or dist/index.js"
     exit 1
 fi
-echo "✓ Using pre-built application"
+echo "✓ Build completed"
 
 echo "Running database migrations..."
 sudo -u nodejs bash -c "set -a && source /var/www/seapos/.env.production && MIGRATION_QUIET=1 && set +a && cd /var/www/seapos && npm run db:migrate:all" || echo "Warning: Migration had issues, but continuing..."
@@ -412,6 +468,14 @@ cd /var/www/coffeehouse
 echo "Extracting package..."
 tar -xzf /tmp/coffeehouse-deploy.tar.gz --overwrite
 
+if [ -f "ecosystem-coffeehouse.config.cjs" ] && [ ! -f "ecosystem.config.cjs" ]; then
+    cp ecosystem-coffeehouse.config.cjs ecosystem.config.cjs
+fi
+if [ -f "start-bfc.sh" ] && [ ! -f "start.sh" ]; then
+    cp start-bfc.sh start.sh
+    chmod +x start.sh
+fi
+
 cat > start.sh << 'STARTSH'
 #!/bin/bash
 # Coffeehouse POS System - Startup Wrapper Script
@@ -425,14 +489,21 @@ STARTSH
 chmod +x start.sh
 
 if [ ! -f ".env.production" ]; then
-    echo "Creating .env.production for Coffeehouse POS..."
-    SESSION_SECRET=$(openssl rand -base64 32)
-    cat > .env.production << ENVEOF
+    echo "Creating .env.production for Coffeehouse POS from example..."
+    if [ -f "env.production.coffeehouse.example" ]; then
+        cp env.production.coffeehouse.example .env.production
+        SESSION_SECRET=$(openssl rand -base64 32)
+        sed -i "s|SESSION_SECRET=.*|SESSION_SECRET=$SESSION_SECRET|" .env.production
+    else
+        SESSION_SECRET=$(openssl rand -base64 32)
+        cat > .env.production << ENVEOF
 DATABASE_URL=postgresql://coffeehouse_user:CoffeehousePOS2024!Secure@localhost:5432/coffeehouse_db
 SESSION_SECRET=$SESSION_SECRET
 PORT=7080
 NODE_ENV=production
+CENTRAL_DASHBOARD_API_KEY=central-dashboard-2024-secure-key
 ENVEOF
+    fi
     chmod 600 .env.production
 fi
 
@@ -443,7 +514,7 @@ chown -R nodejs:nodejs /var/www/coffeehouse 2>/dev/null || echo "Warning: Failed
 free_memory
 check_memory
 
-echo "Installing production dependencies only..."
+echo "Installing all dependencies (full install)..."
 MAX_RETRIES=5
 RETRY_COUNT=0
 INSTALL_SUCCESS=false
@@ -453,10 +524,10 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$INSTALL_SUCCESS" = false ]; do
         check_memory
         sleep 2
     fi
-    if sudo -u nodejs bash -c "cd /var/www/coffeehouse && npm install --omit=dev --no-audit --no-fund --prefer-offline" 2>&1; then
+    if sudo -u nodejs bash -c "cd /var/www/coffeehouse && npm install --no-audit --no-fund --prefer-offline" 2>&1; then
         if sudo -u nodejs bash -c "cd /var/www/coffeehouse && test -d node_modules/express" 2>/dev/null; then
             INSTALL_SUCCESS=true
-            echo "✓ Production dependencies installed successfully"
+            echo "✓ Dependencies installed successfully"
         else
             RETRY_COUNT=$((RETRY_COUNT + 1))
         fi
@@ -470,11 +541,14 @@ if [ "$INSTALL_SUCCESS" = false ]; then
     exit 1
 fi
 
+echo "Building application (using .env.production)..."
+sudo -u nodejs bash -c "set -a && source /var/www/coffeehouse/.env.production && set +a && cd /var/www/coffeehouse && npm run build" || { echo "ERROR: Build failed"; exit 1; }
+
 if [ ! -d "/var/www/coffeehouse/dist/public" ] || [ ! -f "/var/www/coffeehouse/dist/index.js" ]; then
-    echo "ERROR: Pre-built dist folder not found!"
+    echo "ERROR: Build did not produce dist/public or dist/index.js"
     exit 1
 fi
-echo "✓ Using pre-built application"
+echo "✓ Build completed"
 
 echo "Running database migrations..."
 sudo -u nodejs bash -c "set -a && source /var/www/coffeehouse/.env.production && MIGRATION_QUIET=1 && set +a && cd /var/www/coffeehouse && npm run db:migrate:all" || echo "Warning: Migration had issues, but continuing..."
@@ -498,6 +572,14 @@ cd /var/www/bar
 echo "Extracting package..."
 tar -xzf /tmp/bar-deploy.tar.gz --overwrite
 
+if [ -f "ecosystem-bar.config.cjs" ] && [ ! -f "ecosystem.config.cjs" ]; then
+    cp ecosystem-bar.config.cjs ecosystem.config.cjs
+fi
+if [ -f "start-bfc.sh" ] && [ ! -f "start.sh" ]; then
+    cp start-bfc.sh start.sh
+    chmod +x start.sh
+fi
+
 cat > start.sh << 'STARTSH'
 #!/bin/bash
 # Bar POS System - Startup Wrapper Script
@@ -511,14 +593,21 @@ STARTSH
 chmod +x start.sh
 
 if [ ! -f ".env.production" ]; then
-    echo "Creating .env.production for Bar POS..."
-    SESSION_SECRET=$(openssl rand -base64 32)
-    cat > .env.production << ENVEOF
+    echo "Creating .env.production for Bar POS from example..."
+    if [ -f "env.production.bar.example" ]; then
+        cp env.production.bar.example .env.production
+        SESSION_SECRET=$(openssl rand -base64 32)
+        sed -i "s|SESSION_SECRET=.*|SESSION_SECRET=$SESSION_SECRET|" .env.production
+    else
+        SESSION_SECRET=$(openssl rand -base64 32)
+        cat > .env.production << ENVEOF
 DATABASE_URL=postgresql://barpos_user:BarPOS2024!Secure@localhost:5432/barpos_db
 SESSION_SECRET=$SESSION_SECRET
 PORT=7100
 NODE_ENV=production
+CENTRAL_DASHBOARD_API_KEY=central-dashboard-2024-secure-key
 ENVEOF
+    fi
     chmod 600 .env.production
 fi
 
@@ -529,7 +618,7 @@ chown -R nodejs:nodejs /var/www/bar 2>/dev/null || echo "Warning: Failed to chow
 free_memory
 check_memory
 
-echo "Installing production dependencies only..."
+echo "Installing all dependencies (full install)..."
 MAX_RETRIES=5
 RETRY_COUNT=0
 INSTALL_SUCCESS=false
@@ -539,10 +628,10 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$INSTALL_SUCCESS" = false ]; do
         check_memory
         sleep 2
     fi
-    if sudo -u nodejs bash -c "cd /var/www/bar && npm install --omit=dev --no-audit --no-fund --prefer-offline" 2>&1; then
+    if sudo -u nodejs bash -c "cd /var/www/bar && npm install --no-audit --no-fund --prefer-offline" 2>&1; then
         if sudo -u nodejs bash -c "cd /var/www/bar && test -d node_modules/express" 2>/dev/null; then
             INSTALL_SUCCESS=true
-            echo "✓ Production dependencies installed successfully"
+            echo "✓ Dependencies installed successfully"
         else
             RETRY_COUNT=$((RETRY_COUNT + 1))
         fi
@@ -556,11 +645,14 @@ if [ "$INSTALL_SUCCESS" = false ]; then
     exit 1
 fi
 
+echo "Building application (using .env.production)..."
+sudo -u nodejs bash -c "set -a && source /var/www/bar/.env.production && set +a && cd /var/www/bar && npm run build" || { echo "ERROR: Build failed"; exit 1; }
+
 if [ ! -d "/var/www/bar/dist/public" ] || [ ! -f "/var/www/bar/dist/index.js" ]; then
-    echo "ERROR: Pre-built dist folder not found!"
+    echo "ERROR: Build did not produce dist/public or dist/index.js"
     exit 1
 fi
-echo "✓ Using pre-built application"
+echo "✓ Build completed"
 
 echo "Running database migrations..."
 sudo -u nodejs bash -c "set -a && source /var/www/bar/.env.production && MIGRATION_QUIET=1 && set +a && cd /var/www/bar && npm run db:migrate:all" || echo "Warning: Migration had issues, but continuing..."
@@ -573,108 +665,12 @@ echo "✓ Bar POS deployed!"
 free_memory
 fi
 
-# Deploy Central Dashboard
-if [ "$DEPLOY_CENTRAL" = "true" ]; then
-echo ""
-echo "=========================================="
-echo "Deploying Central Dashboard..."
-echo "=========================================="
-
-cd /var/www/central
-echo "Extracting package..."
-tar -xzf /tmp/central-deploy.tar.gz --overwrite
-
-cat > start.sh << 'STARTSH'
-#!/bin/bash
-# Central Dashboard - Startup Wrapper Script
-set -e
-set -a
-source /var/www/central/.env.production
-set +a
-cd /var/www/central
-exec node dist/index.js
-STARTSH
-chmod +x start.sh
-
-if [ ! -f ".env.production" ]; then
-    echo "Creating .env.production for Central Dashboard..."
-    SESSION_SECRET=$(openssl rand -base64 32)
-    cat > .env.production << ENVEOF
-DATABASE_URL=postgresql://central_user:CentralPOS2024!Secure@localhost:5432/central_pos_db
-SESSION_SECRET=$SESSION_SECRET
-PORT=7090
-NODE_ENV=production
-SECURE_COOKIES=false
-ENVEOF
-    chmod 600 .env.production
-fi
-
-free_memory
-echo "Setting permissions for Central Dashboard..."
-sudo -u nodejs bash -c "cd /var/www/central && rm -rf node_modules" 2>/dev/null || true
-chown -R nodejs:nodejs /var/www/central 2>/dev/null || echo "Warning: Failed to chown /var/www/central"
-free_memory
-check_memory
-
-echo "Installing production dependencies only..."
-MAX_RETRIES=5
-RETRY_COUNT=0
-INSTALL_SUCCESS=false
-while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$INSTALL_SUCCESS" = false ]; do
-    if [ $RETRY_COUNT -gt 0 ]; then
-        free_memory
-        check_memory
-        sleep 2
-    fi
-    if sudo -u nodejs bash -c "cd /var/www/central && npm install --omit=dev --no-audit --no-fund --prefer-offline" 2>&1; then
-        if sudo -u nodejs bash -c "cd /var/www/central && test -d node_modules/express" 2>/dev/null; then
-            INSTALL_SUCCESS=true
-            echo "✓ Production dependencies installed successfully"
-        else
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-        fi
-    else
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-    fi
-done
-
-if [ "$INSTALL_SUCCESS" = false ]; then
-    echo "ERROR: Failed to install dependencies after $MAX_RETRIES attempts"
-    exit 1
-fi
-
-if [ ! -d "/var/www/central/dist/public" ] || [ ! -f "/var/www/central/dist/index.js" ]; then
-    echo "ERROR: Pre-built dist folder not found!"
-    exit 1
-fi
-echo "✓ Using pre-built application"
-
-echo "Running database migrations..."
-if [ -f "migrations/0000_create_connected_pos_apps.sql" ]; then
-    sudo -u nodejs bash -c "set -a && source /var/www/central/.env.production && set +a && cd /var/www/central && psql \$DATABASE_URL -f migrations/0000_create_connected_pos_apps.sql" || true
-fi
-if [ -f "migrations/0001_create_users.sql" ]; then
-    sudo -u nodejs bash -c "set -a && source /var/www/central/.env.production && set +a && cd /var/www/central && psql \$DATABASE_URL -f migrations/0001_create_users.sql" || true
-fi
-if [ -f "scripts/create-admin-user.js" ]; then
-    sudo -u nodejs bash -c "set -a && source /var/www/central/.env.production && set +a && cd /var/www/central && node scripts/create-admin-user.js" || true
-fi
-
-cp central.service /etc/systemd/system/central.service
-systemctl daemon-reload
-systemctl enable central
-systemctl restart central
-echo "✓ Central Dashboard deployed!"
-free_memory
-fi
-
 # Cleanup
 [ "$DEPLOY_BFC" = "true" ] && rm -f /tmp/bfcpos-deploy.tar.gz || true
 [ "$DEPLOY_ADORA" = "true" ] && rm -f /tmp/adorapos-deploy.tar.gz || true
 [ "$DEPLOY_SEA" = "true" ] && rm -f /tmp/seapos-deploy.tar.gz || true
 [ "$DEPLOY_COFFEEHOUSE" = "true" ] && rm -f /tmp/coffeehouse-deploy.tar.gz || true
 [ "$DEPLOY_BAR" = "true" ] && rm -f /tmp/bar-deploy.tar.gz || true
-[ "$DEPLOY_CENTRAL" = "true" ] && rm -f /tmp/central-deploy.tar.gz || true
 
 echo ""
 echo "=========================================="
@@ -687,6 +683,5 @@ echo "Services status:"
 [ "$DEPLOY_SEA" = "true" ] && { echo "  Sea POS:"; systemctl status seapos --no-pager | head -5 || true; echo ""; }
 [ "$DEPLOY_COFFEEHOUSE" = "true" ] && { echo "  Coffeehouse POS:"; systemctl status coffeehouse --no-pager | head -5 || true; echo ""; }
 [ "$DEPLOY_BAR" = "true" ] && { echo "  Bar POS:"; systemctl status barpos --no-pager | head -5 || true; echo ""; }
-[ "$DEPLOY_CENTRAL" = "true" ] && { echo "  Central Dashboard:"; systemctl status central --no-pager | head -5 || true; echo ""; }
-echo "Access: http://bfc.bfcpos.com | http://adora.bfcpos.com | http://sea.bfcpos.com | http://coffeehouse.bfcpos.com | http://bar.bfcpos.com | http://central.bfcpos.com"
+echo "Access: http://bfc.bfcpos.com | http://adora.bfcpos.com | http://sea.bfcpos.com | http://coffeehouse.bfcpos.com | http://bar.bfcpos.com"
 echo ""

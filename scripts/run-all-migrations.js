@@ -627,6 +627,23 @@ async function applyMainStockCountMigration(client) {
   }
 }
 
+async function applySizePurchasePricesMigration(client) {
+  console.log('\n📦 Applying size purchase prices migration...');
+  const statements = [
+    `ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "size_purchase_prices" jsonb;`,
+  ];
+  for (let i = 0; i < statements.length; i++) {
+    try {
+      await client.query(statements[i]);
+      console.log(`✅ Add column size_purchase_prices to products`);
+    } catch (error) {
+      if (error.code === '42701' || error.message?.includes('already exists')) {
+        logSkip(`⚠️  Column size_purchase_prices already exists, skipping`);
+      } else throw error;
+    }
+  }
+}
+
 async function applyPositionsDepartmentsMigration(client) {
   console.log('\n📦 Applying positions and departments migration...');
   const migrationPath = join(__dirname, '..', 'migrations', '0011_add_positions_departments.sql');
@@ -1347,6 +1364,11 @@ async function runAllMigrations() {
     await applySizePricingMigration(client);
     await client.query('COMMIT');
 
+    // 16a. Apply size purchase prices migration (products table)
+    await client.query('BEGIN');
+    await applySizePurchasePricesMigration(client);
+    await client.query('COMMIT');
+
     // 16b. Apply theme customization migration
     await client.query('BEGIN');
     await applyThemeCustomizationMigration(client);
@@ -1378,6 +1400,7 @@ async function runAllMigrations() {
     console.log('  - Default units seeded');
     console.log('  - Permissions seeded');
     console.log('  - Size pricing fields added to products and order_items');
+    console.log('  - Size purchase prices field added to products');
     console.log('  - Admin user created');
     console.log('\n🎉 Migration process finished!');
     

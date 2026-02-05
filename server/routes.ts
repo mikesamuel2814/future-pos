@@ -681,6 +681,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.json(products);
       }
     } catch (error) {
+      console.error("GET /api/products error:", error);
       res.status(500).json({ error: "Failed to fetch products" });
     }
   });
@@ -835,18 +836,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
+      // Validate and allow only schema fields (including sizePurchasePrices, sizePrices); strip unknown keys
+      const updateSchema = insertProductSchema.partial().strip();
+      const updates = updateSchema.parse(req.body);
+
       // Check if the data is actually being changed
-      if (req.body.name && req.body.name === currentProduct.name) {
-        const hasOtherChanges = Object.keys(req.body).some(key => {
+      if (updates.name && updates.name === currentProduct.name) {
+        const hasOtherChanges = Object.keys(updates).some(key => {
           if (key === 'name') return false;
-          return req.body[key] !== (currentProduct as any)[key];
+          return updates[key] !== (currentProduct as any)[key];
         });
         if (!hasOtherChanges) {
           return res.status(409).json({ error: "Already updated" });
         }
       }
-      
-      const product = await storage.updateProduct(req.params.id, req.body);
+
+      const product = await storage.updateProduct(req.params.id, updates);
       res.json(product);
     } catch (error) {
       res.status(500).json({ error: "Failed to update product" });

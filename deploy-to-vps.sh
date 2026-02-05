@@ -16,14 +16,13 @@ SSH_USER="${SSH_USER:-admin93}"
 SSH_OPTS=(-o "ProxyCommand=cloudflared access ssh --hostname %h")
 SSH_TARGET="${SSH_USER}@${SSH_HOST}"
 
-# Apps and their tarballs (central is optional - different project)
+# Apps and their tarballs
 declare -A TARBALLS
 TARBALLS[bfcpos]="bfcpos-deploy.tar.gz"
 TARBALLS[adorapos]="adorapos-deploy.tar.gz"
 TARBALLS[seapos]="seapos-deploy.tar.gz"
 TARBALLS[coffeehouse]="coffeehouse-deploy.tar.gz"
 TARBALLS[bar]="bar-deploy.tar.gz"
-TARBALLS[central]="central-deploy.tar.gz"
 
 echo "===== Deploy to VPS (Cloudflare Access SSH) ====="
 echo "Server: $SSH_TARGET"
@@ -47,9 +46,8 @@ DEPLOY_ADORA=false
 DEPLOY_SEA=false
 DEPLOY_COFFEEHOUSE=false
 DEPLOY_BAR=false
-DEPLOY_CENTRAL=false
 
-for app in bfcpos adorapos seapos coffeehouse bar central; do
+for app in bfcpos adorapos seapos coffeehouse bar; do
   tarball="${TARBALLS[$app]}"
   read -p "Deploy $app? [y/N] " -n 1 -r
   echo
@@ -66,7 +64,6 @@ for app in bfcpos adorapos seapos coffeehouse bar central; do
     seapos)       DEPLOY_SEA=true ;;
     coffeehouse)  DEPLOY_COFFEEHOUSE=true ;;
     bar)          DEPLOY_BAR=true ;;
-    central)      DEPLOY_CENTRAL=true ;;
   esac
 done
 
@@ -87,17 +84,17 @@ $DEPLOY_ADORA     && { scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/adorapos-deploy.tar.gz"
 $DEPLOY_SEA       && { scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/seapos-deploy.tar.gz"     "${SSH_TARGET}:/tmp/" && uploaded_any=true; } || true
 $DEPLOY_COFFEEHOUSE && { scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/coffeehouse-deploy.tar.gz" "${SSH_TARGET}:/tmp/" && uploaded_any=true; } || true
 $DEPLOY_BAR       && { scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/bar-deploy.tar.gz"          "${SSH_TARGET}:/tmp/" && uploaded_any=true; } || true
-$DEPLOY_CENTRAL   && { [ -f "$SCRIPT_DIR/central-deploy.tar.gz" ] && scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/central-deploy.tar.gz" "${SSH_TARGET}:/tmp/" && uploaded_any=true; } || echo "  central-deploy.tar.gz not found, skipping central upload."
 
 if [ "$uploaded_any" != "true" ]; then
   echo "No tarballs uploaded. Exiting."
   exit 0
 fi
 
-# --- Step 4: Run server deploy script with flags ---
+# --- Step 4: Run server deploy script with flags (-t gives sudo a TTY for password) ---
+# Strip Windows CRLF line endings on server; pass deploy flags as arguments (sudo often strips env vars)
 echo ""
 echo "===== Running deploy-pos-server.sh on server ====="
-ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "export DEPLOY_BFC=$DEPLOY_BFC DEPLOY_ADORA=$DEPLOY_ADORA DEPLOY_SEA=$DEPLOY_SEA DEPLOY_COFFEEHOUSE=$DEPLOY_COFFEEHOUSE DEPLOY_BAR=$DEPLOY_BAR DEPLOY_CENTRAL=$DEPLOY_CENTRAL; sudo -E bash /tmp/deploy-pos-server.sh"
+ssh -t "${SSH_OPTS[@]}" "$SSH_TARGET" "sed -i 's/\\r\$//' /tmp/deploy-pos-server.sh; sudo bash /tmp/deploy-pos-server.sh $DEPLOY_BFC $DEPLOY_ADORA $DEPLOY_SEA $DEPLOY_COFFEEHOUSE $DEPLOY_BAR"
 
 echo ""
 echo "===== Done ====="

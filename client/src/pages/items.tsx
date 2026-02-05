@@ -112,6 +112,7 @@ export default function ItemManage() {
   const { toast } = useToast();
   const { hasPermission } = usePermissions();
   const [sizePrices, setSizePrices] = useState<Record<string, string>>({}); // Store size prices: { "S": "100", "M": "150", "L": "200" }
+  const [sizePurchasePrices, setSizePurchasePrices] = useState<Record<string, string>>({}); // Purchase cost per size when size pricing
   const [sizeInputs, setSizeInputs] = useState<string[]>([]); // Available sizes: ["S", "M", "L"]
   const [addSizeDialogOpen, setAddSizeDialogOpen] = useState(false);
   const [newSizeInput, setNewSizeInput] = useState("");
@@ -452,9 +453,12 @@ export default function ItemManage() {
   const handleItemSubmit = (data: z.infer<typeof insertProductSchema>) => {
     const submitData = {
       ...data,
-      // Include sizePrices only if size pricing is enabled and there are size prices defined
-      sizePrices: enableSizePricing && Object.keys(sizePrices).length > 0 ? sizePrices : null,
+      // When size pricing is on, ignore single price/cost and use per-size values
+      ...(enableSizePricing && Object.keys(sizePrices).length > 0
+        ? { price: "0", purchaseCost: "", sizePrices, sizePurchasePrices: Object.keys(sizePurchasePrices).length > 0 ? sizePurchasePrices : null }
+        : { sizePrices: null, sizePurchasePrices: null }),
     };
+    if (!submitData.sizePrices) (submitData as any).sizePurchasePrices = null;
     if (editingItem) {
       updateItemMutation.mutate({ id: editingItem.id, data: submitData });
     } else {
@@ -475,6 +479,7 @@ export default function ItemManage() {
       if (!sizeInputs.includes(trimmedSize)) {
         setSizeInputs([...sizeInputs, trimmedSize]);
         setSizePrices({ ...sizePrices, [trimmedSize]: "" });
+        setSizePurchasePrices({ ...sizePurchasePrices, [trimmedSize]: "" });
         setAddSizeDialogOpen(false);
         setNewSizeInput("");
       } else {
@@ -491,9 +496,12 @@ export default function ItemManage() {
   const handleRemoveSize = (size: string) => {
     const newSizes = sizeInputs.filter(s => s !== size);
     const newPrices = { ...sizePrices };
+    const newPurchasePrices = { ...sizePurchasePrices };
     delete newPrices[size];
+    delete newPurchasePrices[size];
     setSizeInputs(newSizes);
     setSizePrices(newPrices);
+    setSizePurchasePrices(newPurchasePrices);
   };
 
   // Handle size price change
@@ -501,10 +509,15 @@ export default function ItemManage() {
     setSizePrices({ ...sizePrices, [size]: price });
   };
 
+  const handleSizePurchasePriceChange = (size: string, cost: string) => {
+    setSizePurchasePrices({ ...sizePurchasePrices, [size]: cost });
+  };
+
   // Reset size prices when size pricing is disabled
   useEffect(() => {
     if (!enableSizePricing) {
       setSizePrices({});
+      setSizePurchasePrices({});
       setSizeInputs([]);
       itemForm.setValue("sizePrices", undefined);
     }
@@ -526,10 +539,12 @@ export default function ItemManage() {
     setEditingItem(item);
     setImagePreview(item.imageUrl || "");
     const sizePricesData = item.sizePrices as Record<string, string> | null | undefined;
+    const sizePurchasePricesData = item.sizePurchasePrices as Record<string, string> | null | undefined;
     const sizes = sizePricesData ? Object.keys(sizePricesData) : [];
     const hasSizePricing = sizePricesData && Object.keys(sizePricesData).length > 0;
     setSizeInputs(sizes);
     setSizePrices(sizePricesData || {});
+    setSizePurchasePrices(sizePurchasePricesData || {});
     setEnableSizePricing(hasSizePricing);
     itemForm.reset({
       name: item.name,
@@ -558,6 +573,7 @@ export default function ItemManage() {
     setEditingItem(null);
     setImagePreview("");
     setSizePrices({});
+    setSizePurchasePrices({});
     setSizeInputs([]);
     setEnableSizePricing(false);
     itemForm.reset({
@@ -1227,35 +1243,37 @@ export default function ItemManage() {
                       )}
                     />
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <FormField
-                        control={itemForm.control}
-                        name="purchaseCost"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Purchase Cost</FormLabel>
-                            <FormControl>
-                              <Input {...field} value={field.value || ""} type="number" step="0.01" placeholder="0.00" data-testid="input-purchase-cost" />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
+                    {!enableSizePricing && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <FormField
+                          control={itemForm.control}
+                          name="purchaseCost"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Purchase Cost</FormLabel>
+                              <FormControl>
+                                <Input {...field} value={field.value || ""} type="number" step="0.01" placeholder="0.00" data-testid="input-purchase-cost" />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
 
-                      <FormField
-                        control={itemForm.control}
-                        name="price"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Sales Price</FormLabel>
-                            <FormControl>
-                              <Input {...field} type="number" step="0.01" placeholder="0.00" data-testid="input-sales-price" />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </div>
+                        <FormField
+                          control={itemForm.control}
+                          name="price"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Sales Price</FormLabel>
+                              <FormControl>
+                                <Input {...field} type="number" step="0.01" placeholder="0.00" data-testid="input-sales-price" />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <FormField
@@ -1334,25 +1352,42 @@ export default function ItemManage() {
                           </Button>
                         )}
                       </div>
-                      {enableSizePricing && (
+                          {enableSizePricing && (
                         <>
                           <p className="text-sm text-muted-foreground">
-                            Set different prices for different sizes (e.g., S, M, L, Small, Large). If sizes are set, the base Sales Price above will be used as default.
+                            Set purchase cost and selling price per size (e.g., S, M, L).
                           </p>
                           {sizeInputs.length > 0 && (
                             <div className="space-y-2">
                               {sizeInputs.map((size) => (
-                                <div key={size} className="flex items-center gap-2">
-                                  <div className="w-16 font-medium">{size} Size</div>
-                                  <Input
-                                    type="number"
-                                    step="0.01"
-                                    placeholder="0.00"
-                                    value={sizePrices[size] || ""}
-                                    onChange={(e) => handleSizePriceChange(size, e.target.value)}
-                                    className="flex-1"
-                                    data-testid={`input-size-price-${size}`}
-                                  />
+                                <div key={size} className="flex items-center gap-2 flex-wrap">
+                                  <div className="w-14 font-medium shrink-0">{size}</div>
+                                  <div className="flex gap-2 flex-1 min-w-0">
+                                    <div className="flex-1 min-w-0">
+                                      <label className="text-xs text-muted-foreground block mb-0.5">Purchase</label>
+                                      <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="0.00"
+                                        value={sizePurchasePrices[size] || ""}
+                                        onChange={(e) => handleSizePurchasePriceChange(size, e.target.value)}
+                                        className="w-full"
+                                        data-testid={`input-size-purchase-${size}`}
+                                      />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <label className="text-xs text-muted-foreground block mb-0.5">Selling</label>
+                                      <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="0.00"
+                                        value={sizePrices[size] || ""}
+                                        onChange={(e) => handleSizePriceChange(size, e.target.value)}
+                                        className="w-full"
+                                        data-testid={`input-size-price-${size}`}
+                                      />
+                                    </div>
+                                  </div>
                                   <Button
                                     type="button"
                                     variant="ghost"
@@ -1566,35 +1601,32 @@ export default function ItemManage() {
                       )}
                     </div>
                     
-                    <div className="flex items-center justify-between">
-                      <span className="text-lg font-bold text-primary font-mono" data-testid={`text-item-price-${product.id}`}>
-                        ${parseFloat(product.price).toFixed(2)}
-                      </span>
-                      <span className="text-sm text-muted-foreground" data-testid={`text-item-unit-${product.id}`}>
-                        per {product.unit}
-                      </span>
-                    </div>
-                    
-                    {/* Show size prices if available (for any unit type) */}
+                    {/* For size-priced items show only size labels; otherwise show main price */}
                     {product.sizePrices && (() => {
-                      const sizePrices = product.sizePrices as Record<string, string> | null | undefined;
-                      if (sizePrices && Object.keys(sizePrices).length > 0) {
-                        const sizes = Object.keys(sizePrices);
+                      const sp = product.sizePrices as Record<string, string> | null | undefined;
+                      if (sp && Object.keys(sp).length > 0) {
                         return (
-                          <div className="text-xs text-muted-foreground space-y-1">
-                            <div className="font-medium">Sizes/Variants:</div>
-                            <div className="flex flex-wrap gap-1">
-                              {sizes.map((size) => (
-                                <Badge key={size} variant="outline" className="text-xs">
-                                  {size}: ${parseFloat(sizePrices[size]).toFixed(2)}
-                                </Badge>
-                              ))}
-                            </div>
+                          <div className="flex flex-wrap gap-1">
+                            {Object.keys(sp).map((size) => (
+                              <Badge key={size} variant="secondary" className="text-xs">
+                                {size}
+                              </Badge>
+                            ))}
                           </div>
                         );
                       }
                       return null;
                     })()}
+                    {(!product.sizePrices || Object.keys((product.sizePrices as Record<string, string>) || {}).length === 0) && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-lg font-bold text-primary font-mono" data-testid={`text-item-price-${product.id}`}>
+                          ${parseFloat(product.price).toFixed(2)}
+                        </span>
+                        <span className="text-sm text-muted-foreground" data-testid={`text-item-unit-${product.id}`}>
+                          per {product.unit}
+                        </span>
+                      </div>
+                    )}
 
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">Stock:</span>
