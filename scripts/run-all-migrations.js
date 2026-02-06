@@ -644,6 +644,23 @@ async function applySizePurchasePricesMigration(client) {
   }
 }
 
+async function applyDuePaymentSlipsMigration(client) {
+  console.log('\n📦 Applying due payment slips migration...');
+  const statements = [
+    `ALTER TABLE "due_payments" ADD COLUMN IF NOT EXISTS "payment_slips" text;`,
+  ];
+  for (let i = 0; i < statements.length; i++) {
+    try {
+      await client.query(statements[i]);
+      console.log('✅ Add column payment_slips to due_payments');
+    } catch (error) {
+      if (error.code === '42701' || error.message?.includes('already exists')) {
+        logSkip('⚠️  Column payment_slips already exists, skipping');
+      } else throw error;
+    }
+  }
+}
+
 async function applyPositionsDepartmentsMigration(client) {
   console.log('\n📦 Applying positions and departments migration...');
   const migrationPath = join(__dirname, '..', 'migrations', '0011_add_positions_departments.sql');
@@ -1379,6 +1396,11 @@ async function runAllMigrations() {
     await applyPositionsDepartmentsMigration(client);
     await client.query('COMMIT');
 
+    // 16d. Apply due payment slips migration
+    await client.query('BEGIN');
+    await applyDuePaymentSlipsMigration(client);
+    await client.query('COMMIT');
+
     // 17. Create admin user (run in separate transaction)
     await client.query('BEGIN');
     await createAdminUser(client);
@@ -1401,6 +1423,7 @@ async function runAllMigrations() {
     console.log('  - Permissions seeded');
     console.log('  - Size pricing fields added to products and order_items');
     console.log('  - Size purchase prices field added to products');
+    console.log('  - Due payment slips field added to due_payments');
     console.log('  - Admin user created');
     console.log('\n🎉 Migration process finished!');
     

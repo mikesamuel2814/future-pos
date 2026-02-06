@@ -744,7 +744,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/products/bulk", requirePermission("inventory.create"), async (req, res) => {
+  app.post("/api/products/bulk", requirePermission("inventory.edit"), async (req, res) => {
     try {
       const items = req.body.items;
       if (!Array.isArray(items)) {
@@ -753,6 +753,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const results = {
         imported: 0,
+        updated: 0,
         failed: 0,
         errors: [] as Array<{ row: number; name: string; error: string }>
       };
@@ -774,26 +775,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const priceStr = toDecimalString(raw.price);
           const qtyStr = toDecimalString(raw.quantity);
           const costStr = toDecimalString(raw.purchaseCost);
-          const item = {
+          const item: Record<string, unknown> = {
             ...raw,
             price: priceStr ?? (raw.price != null ? String(raw.price).trim() : undefined),
             quantity: qtyStr ?? "0",
             purchaseCost: costStr,
           };
-          if (item.price === undefined || item.price === "") {
-            throw new Error("Price is required and must be a valid number");
+          // Normalize size-based pricing from Excel (ensure values are strings)
+          if (item.sizePrices && typeof item.sizePrices === "object" && !Array.isArray(item.sizePrices)) {
+            item.sizePrices = Object.fromEntries(
+              Object.entries(item.sizePrices).map(([k, v]) => [k, v != null ? String(v) : ""])
+            );
+          }
+          if (item.sizePurchasePrices && typeof item.sizePurchasePrices === "object" && !Array.isArray(item.sizePurchasePrices)) {
+            item.sizePurchasePrices = Object.fromEntries(
+              Object.entries(item.sizePurchasePrices).map(([k, v]) => [k, v != null ? String(v) : ""])
+            );
+          }
+          // Allow empty/undefined price only when size-based pricing is provided
+          const hasSizePrices = item.sizePrices && typeof item.sizePrices === "object" && Object.keys(item.sizePrices as object).length > 0;
+          if ((item.price === undefined || item.price === "") && !hasSizePrices) {
+            throw new Error("Price is required and must be a valid number (or use size-based pricing with Sale S/M/L)");
+          }
+          if (hasSizePrices && (item.price === undefined || item.price === "")) {
+            item.price = "0";
           }
           const validatedData = insertProductSchema.parse(item);
 
-          // Check for duplicate name
           const existingProduct = await storage.getProductByName(validatedData.name);
           if (existingProduct) {
-            results.failed++;
-            results.errors.push({
-              row: i + 2,
-              name: validatedData.name,
-              error: "Duplicate name - product already exists"
-            });
+            await storage.updateProduct(existingProduct.id, validatedData);
+            results.updated++;
             continue;
           }
 
@@ -827,7 +839,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!currentProduct) {
         return res.status(404).json({ error: "Product not found" });
       }
-      
+
       // If name is being updated, check for duplicates
       if (req.body.name && req.body.name !== currentProduct.name) {
         const existingProduct = await storage.getProductByName(req.body.name, req.params.id);
@@ -835,16 +847,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(409).json({ error: "Duplicate name" });
         }
       }
-      
-      // Validate and allow only schema fields (including sizePurchasePrices, sizePrices); strip unknown keys
-      const updateSchema = insertProductSchema.partial().strip();
-      const updates = updateSchema.parse(req.body);
 
-      // Check if the data is actually being changed
+      // Normalize body: empty string -> undefined for optional decimals (Zod .optional() accepts undefined); ensure size price values are strings (JSON may send numbers)
+      const body = { ...req.body } as Record<string, unknown>;
+      if (body.purchaseCost === "") body.purchaseCost = undefined;
+      if (body.price === "") body.price = undefined;
+      if (body.quantity === "") body.quantity = undefined;
+      if (body.sizePrices && typeof body.sizePrices === "object" && !Array.isArray(body.sizePrices)) {
+        body.sizePrices = Object.fromEntries(
+          Object.entries(body.sizePrices).map(([k, v]) => [k, v != null ? String(v) : ""])
+        );
+      }
+      if (body.sizePurchasePrices && typeof body.sizePurchasePrices === "object" && !Array.isArray(body.sizePurchasePrices)) {
+        body.sizePurchasePrices = Object.fromEntries(
+          Object.entries(body.sizePurchasePrices).map(([k, v]) => [k, v != null ? String(v) : ""])
+        );
+      }
+
+      // Validate and allow only schema fields; strip unknown keys
+      const updateSchema = insertProductSchema.partial().strip();
+      const updates = updateSchema.parse(body);
+
+      // Check if the data is actually being changed (skip for jsonb - compare by JSON stringify)
       if (updates.name && updates.name === currentProduct.name) {
         const hasOtherChanges = Object.keys(updates).some(key => {
-          if (key === 'name') return false;
-          return updates[key] !== (currentProduct as any)[key];
+          if (key === "name") return false;
+          const a = updates[key];
+          const b = (currentProduct as any)[key];
+          if (typeof a === "object" && a !== null && typeof b === "object" && b !== null) {
+            return JSON.stringify(a) !== JSON.stringify(b);
+          }
+          return a !== b;
         });
         if (!hasOtherChanges) {
           return res.status(409).json({ error: "Already updated" });
@@ -854,6 +887,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const product = await storage.updateProduct(req.params.id, updates);
       res.json(product);
     } catch (error) {
+      console.error("PATCH /api/products/:id error:", error);
       res.status(500).json({ error: "Failed to update product" });
     }
   });
@@ -3005,6 +3039,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const result = await storage.getDuePayments(customerId, branchId, limit, offset);
       res.json(result);
     } catch (error) {
+      console.error("GET /api/due/payments error:", error);
       res.status(500).json({ error: "Failed to fetch payments" });
     }
   });

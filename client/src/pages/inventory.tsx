@@ -1105,6 +1105,7 @@ export default function Inventory() {
       const data = await res.json();
       const allProducts = data.products || [];
 
+      const hasSizePrices = (p: Product) => p.sizePrices && Object.keys((p.sizePrices as Record<string, string>) || {}).length > 0;
       const exportData = allProducts.map((p: Product) => {
         const qty = parseFloat(p.quantity);
         const sold = soldQuantities[p.id] || 0;
@@ -1112,16 +1113,16 @@ export default function Inventory() {
         return {
           "Product Name": p.name,
           "Category": categories.find(c => c.id === p.categoryId)?.name || p.categoryId,
-          "Purchase Price (USD)": p.purchaseCost ? parseFloat(p.purchaseCost) : 0,
-          "Selling Price (USD)": parseFloat(p.price),
+          "Purchase Price (USD)": hasSizePrices(p) ? "Per size" : (p.purchaseCost ? parseFloat(p.purchaseCost) : 0),
+          "Selling Price (USD)": hasSizePrices(p) ? "Per size" : parseFloat(p.price),
           "Quantity": qty,
           "Unit": p.unit,
           "Sold Out": `${sold}/${qty}`,
           "Available": available,
           "Status": qty === 0 ? "Out of Stock" : qty <= stockThreshold ? "Low Stock" : "In Stock",
-          "Profit Margin": p.purchaseCost && parseFloat(p.purchaseCost) > 0 
+          "Profit Margin": hasSizePrices(p) ? "N/A" : (p.purchaseCost && parseFloat(p.purchaseCost) > 0
             ? (parseFloat(p.price) - parseFloat(p.purchaseCost)).toFixed(2)
-            : "N/A",
+            : "N/A"),
         };
       });
 
@@ -1164,6 +1165,7 @@ export default function Inventory() {
       const data = await res.json();
       const allProducts = data.products || [];
 
+      const hasSizePrices = (p: Product) => p.sizePrices && Object.keys((p.sizePrices as Record<string, string>) || {}).length > 0;
       const headers = ["Product Name", "Category", "Purchase Price (USD)", "Selling Price (USD)", "Quantity", "Unit", "Sold Out", "Available", "Status"];
       const rows = allProducts.map((p: Product) => {
         const qty = parseFloat(p.quantity);
@@ -1172,8 +1174,8 @@ export default function Inventory() {
         return [
           p.name,
           categories.find(c => c.id === p.categoryId)?.name || p.categoryId,
-          p.purchaseCost ? parseFloat(p.purchaseCost) : 0,
-          parseFloat(p.price),
+          hasSizePrices(p) ? "Per size" : (p.purchaseCost ? parseFloat(p.purchaseCost) : 0),
+          hasSizePrices(p) ? "Per size" : parseFloat(p.price),
           qty,
           p.unit,
           `${sold}/${qty}`,
@@ -1699,9 +1701,19 @@ export default function Inventory() {
                           <TableCell className="font-medium">{product.name}</TableCell>
                           <TableCell className="hidden md:table-cell">{categories.find(c => c.id === product.categoryId)?.name || product.categoryId}</TableCell>
                           <TableCell className="text-right font-mono hidden lg:table-cell">
-                            {product.purchaseCost ? `$${parseFloat(product.purchaseCost).toFixed(2)}` : "-"}
+                            {product.sizePrices && Object.keys(product.sizePrices as Record<string, string> || {}).length > 0 ? (
+                              <span className="text-muted-foreground text-xs">Per size</span>
+                            ) : (
+                              product.purchaseCost ? `$${parseFloat(product.purchaseCost).toFixed(2)}` : "-"
+                            )}
                           </TableCell>
-                          <TableCell className="text-right font-mono hidden lg:table-cell">${parseFloat(product.price).toFixed(2)}</TableCell>
+                          <TableCell className="text-right font-mono hidden lg:table-cell">
+                            {product.sizePrices && Object.keys(product.sizePrices as Record<string, string> || {}).length > 0 ? (
+                              <span className="text-muted-foreground text-xs">Per size</span>
+                            ) : (
+                              `$${parseFloat(product.price).toFixed(2)}`
+                            )}
+                          </TableCell>
                           <TableCell className="text-right font-mono">{qty}</TableCell>
                           <TableCell className="hidden sm:table-cell">{product.unit}</TableCell>
                           <TableCell className="text-center">
@@ -2856,26 +2868,48 @@ export default function Inventory() {
                 <Label className="text-muted-foreground">Category</Label>
                 <p>{categories.find(c => c.id === selectedProduct.categoryId)?.name || selectedProduct.categoryId}</p>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label className="text-muted-foreground">Purchase Price</Label>
-                  <p className="font-mono">
-                    {selectedProduct.purchaseCost ? `$${parseFloat(selectedProduct.purchaseCost).toFixed(2)}` : "N/A"}
-                  </p>
+              {selectedProduct.sizePrices && Object.keys(selectedProduct.sizePrices as Record<string, string> || {}).length > 0 ? (
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Size-based pricing</Label>
+                  <div className="rounded border p-2 space-y-1 text-sm">
+                    {Object.entries(selectedProduct.sizePrices as Record<string, string> || {}).map(([size, sellPrice]) => {
+                      const purchasePrices = selectedProduct.sizePurchasePrices as Record<string, string> | null | undefined;
+                      const purchasePrice = purchasePrices?.[size];
+                      return (
+                        <div key={size} className="flex justify-between gap-4">
+                          <span className="font-medium">{size}</span>
+                          <span className="font-mono">
+                            Purchase: {purchasePrice ? `$${parseFloat(purchasePrice).toFixed(2)}` : "N/A"} → Sell: ${parseFloat(sellPrice).toFixed(2)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div>
-                  <Label className="text-muted-foreground">Selling Price</Label>
-                  <p className="font-mono">${parseFloat(selectedProduct.price).toFixed(2)}</p>
-                </div>
-              </div>
-              {selectedProduct.purchaseCost && parseFloat(selectedProduct.purchaseCost) > 0 && (
-                <div>
-                  <Label className="text-muted-foreground">Profit Margin</Label>
-                  <p className="font-mono text-green-600 font-semibold">
-                    ${(parseFloat(selectedProduct.price) - parseFloat(selectedProduct.purchaseCost)).toFixed(2)} 
-                    ({(((parseFloat(selectedProduct.price) - parseFloat(selectedProduct.purchaseCost)) / parseFloat(selectedProduct.purchaseCost)) * 100).toFixed(1)}%)
-                  </p>
-                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-muted-foreground">Purchase Price</Label>
+                      <p className="font-mono">
+                        {selectedProduct.purchaseCost ? `$${parseFloat(selectedProduct.purchaseCost).toFixed(2)}` : "N/A"}
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Selling Price</Label>
+                      <p className="font-mono">${parseFloat(selectedProduct.price).toFixed(2)}</p>
+                    </div>
+                  </div>
+                  {selectedProduct.purchaseCost && parseFloat(selectedProduct.purchaseCost) > 0 && (
+                    <div>
+                      <Label className="text-muted-foreground">Profit Margin</Label>
+                      <p className="font-mono text-green-600 font-semibold">
+                        ${(parseFloat(selectedProduct.price) - parseFloat(selectedProduct.purchaseCost)).toFixed(2)}
+                        ({(((parseFloat(selectedProduct.price) - parseFloat(selectedProduct.purchaseCost)) / parseFloat(selectedProduct.purchaseCost)) * 100).toFixed(1)}%)
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
               <div className="grid grid-cols-2 gap-4">
                 <div>

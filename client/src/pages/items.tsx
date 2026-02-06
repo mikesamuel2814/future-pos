@@ -100,7 +100,8 @@ export default function ItemManage() {
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
-  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  /** Multiple category filter: empty = all categories; otherwise show items in any of the selected categories. */
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [dateFilter, setDateFilter] = useState<string>("all");
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
   const [imagePreview, setImagePreview] = useState<string>("");
@@ -138,13 +139,14 @@ export default function ItemManage() {
     isFetchingNextPage,
     isLoading: productsLoading,
   } = useInfiniteQuery<{ products: Product[]; total: number }>({
-    queryKey: ["/api/products", { search: debouncedSearchQuery, category: selectedCategory, dateFilter }],
+    queryKey: ["/api/products", { search: debouncedSearchQuery, categoryIds: selectedCategoryIds, dateFilter }],
     queryFn: async ({ pageParam = 0 }) => {
       const params = new URLSearchParams();
       params.append("limit", "50");
       params.append("offset", String(pageParam));
       if (debouncedSearchQuery) params.append("search", debouncedSearchQuery);
-      if (selectedCategory !== "all") params.append("categoryId", selectedCategory);
+      // API accepts single categoryId; when exactly one category selected, pass it for server-side filter
+      if (selectedCategoryIds.length === 1) params.append("categoryId", selectedCategoryIds[0]);
       
       const res = await fetch(`/api/products?${params.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch products");
@@ -187,13 +189,13 @@ export default function ItemManage() {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
-  }, [searchQuery, selectedCategory, dateFilter]);
+  }, [searchQuery, selectedCategoryIds, dateFilter]);
 
   const filteredProducts = allProducts.filter((product) => {
     const matchesSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       product.description?.toLowerCase().includes(searchQuery.toLowerCase());
     
-    const matchesCategory = selectedCategory === "all" || product.categoryId === selectedCategory;
+    const matchesCategory = selectedCategoryIds.length === 0 || selectedCategoryIds.includes(product.categoryId);
     
     let matchesDate = true;
     const productDate = new Date(product.createdAt);
@@ -676,10 +678,23 @@ export default function ItemManage() {
   };
 
   const handleExport = () => {
-    const csvHeaders = "Name,Category,Purchase Cost,Sales Price,Unit,Quantity,Description,Created At\n";
+    const csvHeaders = "Name,Category,Purchase Cost,Sales Price,Unit,Quantity,Description,Enable Size Pricing,Sizes,Sale S,Sale M,Sale L,Purchase S,Purchase M,Purchase L,Created At\n";
     const csvRows = filteredProducts.map(product => {
       const category = categories.find(c => c.id === product.categoryId)?.name || "";
-      return `"${product.name}","${category}","${product.purchaseCost || ""}","${product.price}","${product.unit}","${product.quantity}","${product.description || ""}","${format(new Date(product.createdAt), "yyyy-MM-dd")}"`;
+      const sizePrices = product.sizePrices as Record<string, string> | null | undefined;
+      const sizePurchasePrices = product.sizePurchasePrices as Record<string, string> | null | undefined;
+      const hasSizePrices = sizePrices && Object.keys(sizePrices).length > 0;
+      const sizesStr = hasSizePrices ? Object.keys(sizePrices).join(",") : "";
+      const saleS = hasSizePrices ? (sizePrices!.S ?? "") : "";
+      const saleM = hasSizePrices ? (sizePrices!.M ?? "") : "";
+      const saleL = hasSizePrices ? (sizePrices!.L ?? "") : "";
+      const purchaseS = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.S ?? "") : "";
+      const purchaseM = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.M ?? "") : "";
+      const purchaseL = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.L ?? "") : "";
+      const enableSizePricing = hasSizePrices ? "Y" : "";
+      const purchaseCost = hasSizePrices ? "" : (product.purchaseCost || "");
+      const price = hasSizePrices ? "" : product.price;
+      return `"${product.name}","${category}","${purchaseCost}","${price}","${product.unit}","${product.quantity}","${product.description || ""}","${enableSizePricing}","${sizesStr}","${saleS}","${saleM}","${saleL}","${purchaseS}","${purchaseM}","${purchaseL}","${format(new Date(product.createdAt), "yyyy-MM-dd")}"`;
     }).join("\n");
     
     const csv = csvHeaders + csvRows;
@@ -808,16 +823,30 @@ export default function ItemManage() {
         const unit = (row[4] || "").toString().trim();
         const quantity = (row[5] || "").toString().trim();
         const description = (row[6] || "").toString().trim();
+        const enableSizePricing = (row[7] || "").toString().trim().toUpperCase();
+        const sizesStr = (row[8] || "").toString().trim();
+        const saleS = (row[9] != null && row[9] !== "") ? String(row[9]).trim() : "";
+        const saleM = (row[10] != null && row[10] !== "") ? String(row[10]).trim() : "";
+        const saleL = (row[11] != null && row[11] !== "") ? String(row[11]).trim() : "";
+        const purchaseS = (row[12] != null && row[12] !== "") ? String(row[12]).trim() : "";
+        const purchaseM = (row[13] != null && row[13] !== "") ? String(row[13]).trim() : "";
+        const purchaseL = (row[14] != null && row[14] !== "") ? String(row[14]).trim() : "";
 
-        if (!name || !categoryName || !price || !unit || !quantity) {
+        const useSizePricing = (enableSizePricing === "Y" || enableSizePricing === "YES" || enableSizePricing === "TRUE") && sizesStr && (saleS || saleM || saleL);
+
+        if (!name || !categoryName || !unit || !quantity) {
           skippedBeforeImport++;
           const missing = [];
           if (!name) missing.push('Name');
           if (!categoryName) missing.push('Category');
-          if (!price) missing.push('Sales Price');
           if (!unit) missing.push('Unit');
           if (!quantity) missing.push('Quantity');
           skipReasons.push(`Row "${name || 'unnamed'}": Missing required fields: ${missing.join(', ')}`);
+          continue;
+        }
+        if (!useSizePricing && !price) {
+          skippedBeforeImport++;
+          skipReasons.push(`Row "${name}": Sales Price is required (or enable size pricing with at least one Sale S/M/L).`);
           continue;
         }
 
@@ -828,15 +857,42 @@ export default function ItemManage() {
           continue;
         }
 
+        let sizePrices: Record<string, string> | null = null;
+        let sizePurchasePrices: Record<string, string> | null = null;
+        let finalPrice = price;
+        let finalPurchaseCost = purchaseCost || undefined;
+
+        if (useSizePricing) {
+          const sizeLabels = sizesStr.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+          sizePrices = {};
+          sizePurchasePrices = {};
+          const saleBySize: Record<string, string> = { S: saleS, M: saleM, L: saleL };
+          const purchaseBySize: Record<string, string> = { S: purchaseS, M: purchaseM, L: purchaseL };
+          for (const size of sizeLabels) {
+            const saleVal = saleBySize[size] ?? (size === "S" ? saleS : size === "M" ? saleM : size === "L" ? saleL : "");
+            const purchaseVal = purchaseBySize[size] ?? (size === "S" ? purchaseS : size === "M" ? purchaseM : size === "L" ? purchaseL : "");
+            if (saleVal) sizePrices![size] = saleVal;
+            if (purchaseVal) sizePurchasePrices![size] = purchaseVal;
+          }
+          if (Object.keys(sizePrices).length === 0) {
+            skippedBeforeImport++;
+            skipReasons.push(`Row "${name}": Size pricing enabled but no Sale S/M/L values.`);
+            continue;
+          }
+          finalPrice = "0";
+          finalPurchaseCost = undefined;
+        }
+
         itemsToImport.push({
           name,
           categoryId: category.id,
-          purchaseCost: purchaseCost || undefined,
-          price,
+          purchaseCost: finalPurchaseCost || undefined,
+          price: finalPrice,
           unit,
           quantity,
           description,
           imageUrl: "",
+          ...(sizePrices && Object.keys(sizePrices).length > 0 ? { sizePrices, sizePurchasePrices: (sizePurchasePrices && Object.keys(sizePurchasePrices).length > 0) ? sizePurchasePrices : null } : {}),
         });
       }
 
@@ -863,9 +919,15 @@ export default function ItemManage() {
             console.log("Import skip reasons:", skipReasons);
           }
           
+          const imported = result.imported || 0;
+          const updated = result.updated || 0;
+          const parts = [];
+          if (imported > 0) parts.push(`${imported} imported`);
+          if (updated > 0) parts.push(`${updated} updated`);
+          const summary = parts.length > 0 ? parts.join(", ") : "0 items processed";
           toast({
             title: "Import Complete",
-            description: `Successfully imported ${result.imported || 0} items${totalSkipped > 0 ? `. ${totalSkipped} items skipped. Check console for details.` : ''}`,
+            description: `${summary}${totalSkipped > 0 ? `. ${totalSkipped} failed or skipped. Check console for details.` : "."}`,
             variant: totalSkipped > 0 ? "default" : "default",
           });
         } catch (error) {
@@ -906,19 +968,23 @@ export default function ItemManage() {
       return;
     }
 
-    // Use actual categories from the system
+    // Use actual categories from the system. Size-based pricing columns: Enable Size Pricing (Y/N), Sizes (e.g. S,M,L), Sale S/M/L, Purchase S/M/L
     const sampleData = [
-      ["Name", "Category", "Purchase Cost", "Sales Price", "Unit", "Quantity", "Description"],
-      ["Sample Item 1", categories[0].name, "6.00", "10.60", "plate", "50", "Example item description"],
-      ["Sample Item 2", categories[0].name, "4.50", "8.50", "serving", "100", "Example item description"],
+      [
+        "Name", "Category", "Purchase Cost", "Sales Price", "Unit", "Quantity", "Description",
+        "Enable Size Pricing", "Sizes", "Sale S", "Sale M", "Sale L", "Purchase S", "Purchase M", "Purchase L",
+      ],
+      ["Sample Item 1", categories[0].name, "6.00", "10.60", "plate", "50", "Example item description", "", "", "", "", "", "", "", ""],
+      ["Sample Item 2", categories[0].name, "4.50", "8.50", "serving", "100", "Example item description", "", "", "", "", "", "", "", ""],
+      // Example row with size-based pricing (leave Purchase Cost and Sales Price as 0 when using size pricing)
+      ["Sample Drink", categories[0].name, "0", "0", "cup", "100", "Size-priced drink", "Y", "S,M,L", "2.50", "3.00", "3.50", "1.00", "1.20", "1.50"],
     ];
 
-    // Add more examples if there are more categories
     if (categories.length > 1) {
-      sampleData.push(["Sample Item 3", categories[1].name, "6.50", "10.50", "piece", "60", "Example item description"]);
+      sampleData.push(["Sample Item 3", categories[1].name, "6.50", "10.50", "piece", "60", "Example item description", "", "", "", "", "", "", "", ""]);
     }
     if (categories.length > 2) {
-      sampleData.push(["Sample Item 4", categories[2].name, "9.00", "15.00", "piece", "40", "Example item description"]);
+      sampleData.push(["Sample Item 4", categories[2].name, "9.00", "15.00", "piece", "40", "Example item description", "", "", "", "", "", "", "", ""]);
     }
     
     const worksheet = XLSX.utils.aoa_to_sheet(sampleData);
@@ -1510,19 +1576,61 @@ export default function ItemManage() {
                 />
               </div>
 
-              <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                <SelectTrigger data-testid="select-filter-category">
-                  <SelectValue placeholder="All Categories" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  {categories.map((category) => (
-                    <SelectItem key={category.id} value={category.id}>
-                      {category.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    className="w-full justify-between font-normal"
+                    data-testid="select-filter-category"
+                  >
+                    {selectedCategoryIds.length === 0
+                      ? "All Categories"
+                      : selectedCategoryIds.length === 1
+                        ? categories.find((c) => c.id === selectedCategoryIds[0])?.name ?? "1 category"
+                        : `${selectedCategoryIds.length} categories`}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[280px] p-0" align="start">
+                  <div className="max-h-[300px] overflow-y-auto p-2">
+                    <div
+                      className="flex items-center gap-2 rounded-md px-2 py-2 hover:bg-muted/50 cursor-pointer"
+                      onClick={() => setSelectedCategoryIds([])}
+                    >
+                      <Checkbox
+                        checked={selectedCategoryIds.length === 0}
+                        onCheckedChange={(checked) => checked && setSelectedCategoryIds([])}
+                      />
+                      <span className="text-sm font-medium">All Categories</span>
+                    </div>
+                    {categories.map((category) => (
+                      <div
+                        key={category.id}
+                        className="flex items-center gap-2 rounded-md px-2 py-2 hover:bg-muted/50 cursor-pointer"
+                        onClick={() => {
+                          setSelectedCategoryIds((prev) =>
+                            prev.includes(category.id)
+                              ? prev.filter((id) => id !== category.id)
+                              : [...prev, category.id]
+                          );
+                        }}
+                      >
+                        <Checkbox
+                          checked={selectedCategoryIds.includes(category.id)}
+                          onCheckedChange={(checked) => {
+                            setSelectedCategoryIds((prev) =>
+                              checked
+                                ? [...prev, category.id]
+                                : prev.filter((id) => id !== category.id)
+                            );
+                          }}
+                        />
+                        <span className="text-sm">{category.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
 
               <div className="flex gap-2">
                 <Select value={dateFilter} onValueChange={setDateFilter}>
@@ -1697,11 +1805,11 @@ export default function ItemManage() {
                 <PackagePlus className="w-12 h-12 text-muted-foreground mb-4" />
                 <h3 className="text-lg font-semibold mb-2">No items found</h3>
                 <p className="text-muted-foreground text-center mb-4">
-                  {searchQuery || selectedCategory !== "all" || dateFilter !== "all"
+                  {searchQuery || selectedCategoryIds.length > 0 || dateFilter !== "all"
                     ? "Try adjusting your search filters"
                     : "Get started by adding your first item"}
                 </p>
-                {!searchQuery && selectedCategory === "all" && dateFilter === "all" && (
+                {!searchQuery && selectedCategoryIds.length === 0 && dateFilter === "all" && (
                   <Button onClick={handleAddItemClick} data-testid="button-add-first-item">
                     <Plus className="w-4 h-4 mr-2" />
                     Add Your First Item

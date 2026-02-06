@@ -56,8 +56,13 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { useDebounce } from "@/hooks/use-debounce";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useBranch } from "@/contexts/BranchContext";
-import type { Customer, Order, DuePayment } from "@shared/schema";
+import type { Customer, Order, DuePayment, OrderItem } from "@shared/schema";
 import { z } from "zod";
+
+/** Order with items (from GET /api/orders/:id); items include product and selectedSize for size-based pricing. */
+interface OrderWithItems extends Order {
+  items?: Array<(OrderItem & { product: { name: string }; productName?: string })>;
+}
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -290,6 +295,8 @@ export default function DueManagement() {
   const [editDueOrderDateType, setEditDueOrderDateType] = useState<"date" | "month">("date");
   const [deleteDueOrder, setDeleteDueOrder] = useState<Order | null>(null);
   const [showDeleteDueOrderDialog, setShowDeleteDueOrderDialog] = useState(false);
+  const [viewOrderDetailId, setViewOrderDetailId] = useState<string | null>(null);
+  const [showOrderDetailDialog, setShowOrderDetailDialog] = useState(false);
   const [activeTab, setActiveTab] = useState<"customers" | "payments">("customers");
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -376,6 +383,16 @@ export default function DueManagement() {
 
   const { data: allOrders = [], refetch: refetchOrders } = useQuery<Order[]>({
     queryKey: ["/api/orders", { branchId: selectedBranchId }],
+  });
+
+  const { data: viewOrderDetail, isLoading: viewOrderDetailLoading } = useQuery<OrderWithItems>({
+    queryKey: ["/api/orders", viewOrderDetailId],
+    queryFn: async () => {
+      if (!viewOrderDetailId) return null as unknown as OrderWithItems;
+      const res = await apiRequest("GET", `/api/orders/${viewOrderDetailId}`);
+      return res.json();
+    },
+    enabled: !!viewOrderDetailId && showOrderDetailDialog,
   });
 
   const { data: duePaymentsData, refetch: refetchDuePayments } = useQuery<{ payments: DuePayment[]; total: number }>({
@@ -2242,6 +2259,17 @@ export default function DueManagement() {
                             <p className="text-xs text-muted-foreground">
                               Payment: {paymentMethod}
                             </p>
+                            <Button
+                              type="button"
+                              variant="link"
+                              className="h-auto p-0 text-xs mt-1"
+                              onClick={() => {
+                                setViewOrderDetailId(order.id);
+                                setShowOrderDetailDialog(true);
+                              }}
+                            >
+                              View items
+                            </Button>
                           </div>
                           <div className="text-right ml-4">
                             <p className="text-sm font-semibold">${orderTotal.toFixed(2)}</p>
@@ -2858,6 +2886,19 @@ export default function DueManagement() {
                                 </div>
                               </div>
                               <div className="flex gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 w-8 p-0"
+                                  onClick={() => {
+                                    setViewOrderDetailId(order.id);
+                                    setShowOrderDetailDialog(true);
+                                  }}
+                                  title="View order items"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </Button>
                                 {hasPermission("sales.edit") && (
                                   <Button
                                     type="button"
@@ -3077,6 +3118,75 @@ export default function DueManagement() {
               {deleteDueOrderMutation.isPending ? "Deleting..." : "Delete"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Order Detail Dialog – shows line items with size and price (size-based pricing support) */}
+      <Dialog
+        open={showOrderDetailDialog}
+        onOpenChange={(open) => {
+          setShowOrderDetailDialog(open);
+          if (!open) setViewOrderDetailId(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[560px] max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Order details</DialogTitle>
+            <DialogDescription>
+              {viewOrderDetail
+                ? `Order #${viewOrderDetail.orderNumber || viewOrderDetail.id.slice(0, 8)} • ${format(new Date(viewOrderDetail.createdAt), "MMM dd, yyyy HH:mm")}`
+                : "Loading…"}
+            </DialogDescription>
+          </DialogHeader>
+          {viewOrderDetailLoading && (
+            <div className="py-8 text-center text-muted-foreground">Loading order items…</div>
+          )}
+          {!viewOrderDetailLoading && viewOrderDetail && (
+            <div className="overflow-auto flex-1 -mx-1 px-1">
+              {(!viewOrderDetail.items || viewOrderDetail.items.length === 0) ? (
+                <p className="text-sm text-muted-foreground py-4">No line items (e.g. manual due entry).</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product</TableHead>
+                      <TableHead className="w-16">Size</TableHead>
+                      <TableHead className="w-16 text-right">Qty</TableHead>
+                      <TableHead className="text-right">Unit price</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {viewOrderDetail.items.map((item: any) => {
+                      const productName = item.productName ?? item.product?.name ?? "—";
+                      const price = parseFloat(item.price ?? "0");
+                      const total = parseFloat(item.total ?? "0");
+                      const qty = Number(item.quantity) || 0;
+                      return (
+                        <TableRow key={item.id}>
+                          <TableCell className="font-medium">{productName}</TableCell>
+                          <TableCell>
+                            {item.selectedSize ? (
+                              <Badge variant="secondary" className="text-xs">{item.selectedSize}</Badge>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">{qty}</TableCell>
+                          <TableCell className="text-right">${price.toFixed(2)}</TableCell>
+                          <TableCell className="text-right">${total.toFixed(2)}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              )}
+              <div className="flex justify-end gap-4 mt-4 pt-4 border-t text-sm">
+                <span className="text-muted-foreground">Order total:</span>
+                <span className="font-semibold">${parseFloat(viewOrderDetail.total || "0").toFixed(2)}</span>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

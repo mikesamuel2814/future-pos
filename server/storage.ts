@@ -104,7 +104,7 @@ export interface IStorage {
   deleteCategory(id: string): Promise<boolean>;
   
   getProducts(branchId?: string | null): Promise<Product[]>;
-  getProductsPaginated(branchId?: string | null, limit?: number, offset?: number, categoryId?: string | null, search?: string, minPrice?: number, maxPrice?: number, inStock?: boolean, dateFrom?: Date, dateTo?: Date, hasShortage?: boolean, status?: "in_stock" | "low_stock" | "out_of_stock", threshold?: number): Promise<{ products: Product[]; total: number }>;
+  getProductsPaginated(branchId?: string | null, limit?: number, offset?: number, categoryIdOrIds?: string | string[] | null, search?: string, minPrice?: number, maxPrice?: number, inStock?: boolean, dateFrom?: Date, dateTo?: Date, hasShortage?: boolean, status?: "in_stock" | "low_stock" | "out_of_stock", threshold?: number): Promise<{ products: Product[]; total: number }>;
   getLowStockProductsPaginated(branchId?: string | null, threshold?: number, limit?: number, offset?: number, search?: string, categoryId?: string | null): Promise<{ products: Product[]; total: number }>;
   getInventoryAdjustmentsPaginated(branchId?: string | null, limit?: number, offset?: number, search?: string, productId?: string | null, adjustmentType?: string | null): Promise<{ adjustments: InventoryAdjustment[]; total: number }>;
   getProduct(id: string): Promise<Product | undefined>;
