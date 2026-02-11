@@ -37,6 +37,8 @@ export default function StaffSalaryPage() {
   const [salaryDate, setSalaryDate] = useState<Date>(new Date());
   const [showBulkReleaseConfirm, setShowBulkReleaseConfirm] = useState(false);
   const [importJson, setImportJson] = useState("");
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
+  const [exportingSalaries, setExportingSalaries] = useState(false);
   const [showAddPositionDialog, setShowAddPositionDialog] = useState(false);
   const [showAddDepartmentDialog, setShowAddDepartmentDialog] = useState(false);
   const [editPosition, setEditPosition] = useState<Position | null>(null);
@@ -65,8 +67,37 @@ export default function StaffSalaryPage() {
     queryKey: ["/api/employees"],
   });
 
+  // When months selected, use exact date-time range in local time (fixes timezone)
+  const salaryListParams = () => {
+    const params = new URLSearchParams();
+    if (selectedMonths.length > 0) {
+      const sorted = [...selectedMonths].sort();
+      const [y1, m1] = sorted[0].split("-").map(Number);
+      const [y2, m2] = sorted[sorted.length - 1].split("-").map(Number);
+      params.append("startDate", new Date(y1, m1 - 1, 1, 0, 0, 0, 0).toISOString());
+      params.append("endDate", new Date(y2, m2, 0, 23, 59, 59, 999).toISOString());
+    }
+    return params.toString();
+  };
+
+  const salaryParamsString = salaryListParams();
+
   const { data: salariesWithEmployees = [], isLoading: salariesLoading } = useQuery<(StaffSalary & { employee: Employee | null })[]>({
-    queryKey: ["/api/staff-salaries/with-employees"],
+    queryKey: ["/api/staff-salaries/with-employees", salaryParamsString],
+    queryFn: async () => {
+      const res = await fetch(`/api/staff-salaries/with-employees${salaryParamsString ? `?${salaryParamsString}` : ""}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch salaries");
+      return res.json();
+    },
+  });
+
+  const { data: salarySummary } = useQuery<{ totalSalaries: number; totalAmount: number; netTotal: number; employeeCount: number }>({
+    queryKey: ["/api/staff-salaries/summary", salaryParamsString],
+    queryFn: async () => {
+      const res = await fetch(`/api/staff-salaries/summary${salaryParamsString ? `?${salaryParamsString}` : ""}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch salary summary");
+      return res.json();
+    },
   });
 
   const { data: positions = EMPTY_POSITIONS } = useQuery<Position[]>({
@@ -332,6 +363,32 @@ export default function StaffSalaryPage() {
         toast({ title: "Exported", description: `${data.length} staff exported` });
       })
       .catch(() => toast({ title: "Error", description: "Export failed", variant: "destructive" }));
+  };
+
+  const handleExportSalaries = async () => {
+    setExportingSalaries(true);
+    try {
+      const q = salaryListParams();
+      const res = await fetch(`/api/staff-salaries/export${q ? `?${q}` : ""}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to export");
+      const { salaries: list } = await res.json();
+      const exportData = (list || []).map((s: StaffSalary & { employee: Employee | null }) => ({
+        "Employee": s.employee?.name ?? "",
+        "Salary Date": format(new Date(s.salaryDate), "yyyy-MM-dd"),
+        "Salary Amount": s.salaryAmount,
+        "Deductions": s.deductSalary,
+        "Total": s.totalSalary,
+      }));
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Salaries");
+      XLSX.writeFile(wb, `staff-salaries-${format(new Date(), "yyyy-MM-dd")}.xlsx`);
+      toast({ title: "Success", description: `Exported ${exportData.length} salary records` });
+    } catch (e) {
+      toast({ title: "Export Failed", description: e instanceof Error ? e.message : "Failed to export", variant: "destructive" });
+    } finally {
+      setExportingSalaries(false);
+    }
   };
 
   const handleBulkRelease = () => {
@@ -617,7 +674,7 @@ export default function StaffSalaryPage() {
               <CardTitle className="text-sm font-medium">Salary Records</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{salariesWithEmployees.length}</div>
+              <div className="text-2xl font-bold">{salarySummary?.totalSalaries ?? salariesWithEmployees.length}</div>
               <p className="text-xs text-muted-foreground">Released payments</p>
             </CardContent>
           </Card>
@@ -627,7 +684,7 @@ export default function StaffSalaryPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {formatCurrency(salariesWithEmployees.reduce((s, r) => s + parseFloat(r.totalSalary || "0"), 0))}
+                {formatCurrency(salarySummary?.netTotal ?? salariesWithEmployees.reduce((s, r) => s + parseFloat(r.totalSalary || "0"), 0))}
               </div>
               <p className="text-xs text-muted-foreground">From salary history</p>
             </CardContent>
@@ -772,7 +829,7 @@ export default function StaffSalaryPage() {
                 <CardDescription>Select staff and release salary for the chosen date. Amounts use staff base salary.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center flex-wrap">
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button variant="outline">
@@ -783,6 +840,36 @@ export default function StaffSalaryPage() {
                       <Calendar mode="single" selected={salaryDate} onSelect={(d) => d && setSalaryDate(d)} />
                     </PopoverContent>
                   </Popover>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className="w-[180px] justify-start">
+                        {selectedMonths.length === 0 ? "All months" : selectedMonths.length <= 2 ? selectedMonths.map((m) => { const [y, mo] = m.split("-").map(Number); return format(new Date(y, mo - 1, 1), "MMM yyyy"); }).join(", ") : `${selectedMonths.length} months`}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[280px] p-0" align="start">
+                      <div className="max-h-[300px] overflow-y-auto p-2">
+                        {Array.from({ length: 24 }, (_, i) => {
+                          const d = new Date();
+                          d.setMonth(d.getMonth() - (23 - i));
+                          const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+                          const label = format(d, "MMMM yyyy");
+                          const checked = selectedMonths.includes(value);
+                          return (
+                            <div key={value} className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted cursor-pointer" onClick={() => setSelectedMonths((prev) => (checked ? prev.filter((x) => x !== value) : [...prev, value].sort()))}>
+                              <Checkbox checked={checked} onCheckedChange={() => {}} />
+                              <span className="text-sm">{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                  {hasPermission("reports.export") && (
+                    <Button variant="outline" disabled={exportingSalaries} onClick={handleExportSalaries}>
+                      <Download className="w-4 h-4 mr-2" />
+                      {exportingSalaries ? "Exporting…" : "Export Salaries"}
+                    </Button>
+                  )}
                   {hasPermission("hrm.create") && (
                     <Button onClick={handleBulkRelease} disabled={selectedIds.size === 0}>
                       <DollarSign className="w-4 h-4 mr-2" />

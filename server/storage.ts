@@ -123,14 +123,15 @@ export interface IStorage {
   deleteTable(id: string): Promise<boolean>;
   
   getOrders(branchId?: string | null): Promise<Order[]>;
-  getOrdersPaginated(branchId?: string | null, limit?: number, offset?: number, search?: string, paymentMethod?: string, paymentStatus?: string, minAmount?: number, maxAmount?: number, dateFrom?: Date, dateTo?: Date, productSearch?: string): Promise<{ orders: Order[]; total: number }>;
+  getOrdersPaginated(branchId?: string | null, limit?: number, offset?: number, search?: string, paymentMethod?: string, paymentStatus?: string, minAmount?: number, maxAmount?: number, dateFrom?: Date, dateTo?: Date, productSearch?: string, months?: string[]): Promise<{ orders: Order[]; total: number }>;
   getCustomerOrdersPaginated(customerId: string, branchId?: string | null, limit?: number, offset?: number, search?: string, paymentStatus?: string, dateFrom?: Date, dateTo?: Date): Promise<{ orders: Order[]; total: number }>;
   getCustomerTransactionsPaginated(customerId: string, branchId?: string | null, limit?: number, offset?: number, search?: string, dateFrom?: Date, dateTo?: Date): Promise<{ transactions: Array<{ id: string; type: "due" | "payment"; date: Date; amount: number; description: string; paymentMethod?: string; order?: Order; payment?: DuePayment }>; total: number }>;
   getOrder(id: string): Promise<Order | undefined>;
   getDraftOrders(branchId?: string | null): Promise<Order[]>;
   getQROrders(branchId?: string | null): Promise<Order[]>;
+  getWebOrders(branchId?: string | null): Promise<Order[]>;
   getCompletedOrders(branchId?: string | null): Promise<Order[]>;
-  getSalesStats(branchId?: string | null): Promise<{ totalSales: number; totalRevenue: number; totalDue: number; totalPaid: number; averageOrderValue: number }>;
+  getSalesStats(branchId?: string | null, filters?: { dateFrom?: Date; dateTo?: Date; months?: string[]; paymentMethod?: string; paymentStatus?: string; minAmount?: number; maxAmount?: number; search?: string }): Promise<{ totalSales: number; totalRevenue: number; totalDue: number; totalPaid: number; averageOrderValue: number }>;
   createOrder(order: InsertOrder): Promise<Order>;
   createOrderWithItems(order: InsertOrder, items: Omit<InsertOrderItem, 'orderId'>[]): Promise<Order>;
   updateOrder(id: string, order: Partial<InsertOrder>): Promise<Order | undefined>;
@@ -172,7 +173,8 @@ export interface IStorage {
   updateUnit(id: string, unit: Partial<InsertUnit>): Promise<Unit | undefined>;
   deleteUnit(id: string): Promise<boolean>;
   
-  getExpenses(branchId?: string | null): Promise<Expense[]>;
+  getExpenses(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<Expense[]>;
+  getExpenseStats(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<{ totalAmount: number; count: number; avgExpense: number }>;
   getExpense(id: string): Promise<Expense | undefined>;
   createExpense(expense: InsertExpense): Promise<Expense>;
   updateExpense(id: string, expense: Partial<InsertExpense>): Promise<Expense | undefined>;
@@ -353,7 +355,13 @@ export interface IStorage {
   }>; total: number }>;
   
   getCustomersDueSummaryStats(
-    branchId?: string | null
+    branchId?: string | null,
+    dateFrom?: Date,
+    dateTo?: Date,
+    search?: string,
+    statusFilter?: string,
+    minAmount?: number,
+    maxAmount?: number
   ): Promise<{
     totalCustomers: number;
     pendingDues: number;
@@ -497,15 +505,12 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Date range filter
+    // Date range filter (use dateTo as-is so client's timezone end time is respected)
     if (dateFrom) {
       conditions.push(gte(products.createdAt, dateFrom));
     }
     if (dateTo) {
-      // Set to end of day
-      const endOfDay = new Date(dateTo);
-      endOfDay.setHours(23, 59, 59, 999);
-      conditions.push(lte(products.createdAt, endOfDay));
+      conditions.push(lte(products.createdAt, dateTo));
     }
 
     // Shortage filter
@@ -676,6 +681,16 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(orders).where(eq(orders.status, 'qr-pending')).orderBy(desc(orders.createdAt));
   }
 
+  async getWebOrders(branchId?: string | null): Promise<Order[]> {
+    const webPending = and(eq(orders.orderSource, 'web'), eq(orders.status, 'web-pending'));
+    if (branchId) {
+      return await db.select().from(orders)
+        .where(and(webPending, eq(orders.branchId, branchId)))
+        .orderBy(desc(orders.createdAt));
+    }
+    return await db.select().from(orders).where(webPending).orderBy(desc(orders.createdAt));
+  }
+
   async getCompletedOrders(branchId?: string | null): Promise<Order[]> {
     if (branchId) {
       return await db.select().from(orders)
@@ -696,7 +711,8 @@ export class DatabaseStorage implements IStorage {
     maxAmount?: number,
     dateFrom?: Date,
     dateTo?: Date,
-    productSearch?: string
+    productSearch?: string,
+    months?: string[]
   ): Promise<{ orders: Order[]; total: number }> {
     const conditions: any[] = [];
     
@@ -808,14 +824,26 @@ export class DatabaseStorage implements IStorage {
       conditions.push(lte(sql`CAST(${orders.total} AS DECIMAL)`, maxAmount));
     }
     
-    // Date range filter
+    // Date range filter (use dateTo as-is so client's timezone end time is respected, e.g. Jan 31 23:59:59.999 local)
     if (dateFrom) {
       conditions.push(gte(orders.createdAt, dateFrom));
     }
     if (dateTo) {
-      const endOfDay = new Date(dateTo);
-      endOfDay.setHours(23, 59, 59, 999);
-      conditions.push(lte(orders.createdAt, endOfDay));
+      conditions.push(lte(orders.createdAt, dateTo));
+    }
+    
+    // Months filter (YYYY-MM): only when dateFrom/dateTo not both set (e.g. legacy or when client sends months only)
+    if (months && months.length > 0 && !(dateFrom && dateTo)) {
+      const monthConditions = months.map((m) => {
+        const parts = m.trim().split("-");
+        const y = parseInt(parts[0], 10);
+        const mo = parseInt(parts[1], 10);
+        if (isNaN(y) || isNaN(mo)) return null;
+        return sql`(EXTRACT(YEAR FROM ${orders.createdAt})::int = ${y} AND EXTRACT(MONTH FROM ${orders.createdAt})::int = ${mo})`;
+      }).filter(Boolean);
+      if (monthConditions.length > 0) {
+        conditions.push(or(...monthConditions));
+      }
     }
     
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -921,14 +949,12 @@ export class DatabaseStorage implements IStorage {
       conditions.push(eq(orders.paymentStatus, paymentStatus));
     }
     
-    // Date range filter
+    // Date range filter (use dateTo as-is so client's timezone end time is respected)
     if (dateFrom) {
       conditions.push(gte(orders.createdAt, dateFrom));
     }
     if (dateTo) {
-      const endOfDay = new Date(dateTo);
-      endOfDay.setHours(23, 59, 59, 999);
-      conditions.push(lte(orders.createdAt, endOfDay));
+      conditions.push(lte(orders.createdAt, dateTo));
     }
     
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -1053,14 +1079,12 @@ export class DatabaseStorage implements IStorage {
       );
     }
     
-    // Apply date range filter
+    // Apply date range filter (use dateTo as-is so client's timezone end time is respected)
     if (dateFrom) {
       filteredTransactions = filteredTransactions.filter(t => t.date >= dateFrom);
     }
     if (dateTo) {
-      const endOfDay = new Date(dateTo);
-      endOfDay.setHours(23, 59, 59, 999);
-      filteredTransactions = filteredTransactions.filter(t => t.date <= endOfDay);
+      filteredTransactions = filteredTransactions.filter(t => t.date <= dateTo);
     }
     
     // Sort by date, newest first
@@ -1076,48 +1100,84 @@ export class DatabaseStorage implements IStorage {
     return { transactions: paginatedTransactions, total };
   }
 
-  async getSalesStats(branchId?: string | null): Promise<{ totalSales: number; totalRevenue: number; totalDue: number; totalPaid: number; averageOrderValue: number }> {
+  async getSalesStats(branchId?: string | null, filters?: { dateFrom?: Date; dateTo?: Date; months?: string[]; paymentMethod?: string; paymentStatus?: string; minAmount?: number; maxAmount?: number; search?: string }): Promise<{ totalSales: number; totalRevenue: number; totalDue: number; totalPaid: number; averageOrderValue: number }> {
     const conditions: any[] = [];
-    
-    // Branch filter
-    if (branchId) {
-      conditions.push(eq(orders.branchId, branchId));
-    }
-    
-    // Only completed orders
+
+    if (branchId) conditions.push(eq(orders.branchId, branchId));
     conditions.push(eq(orders.status, 'completed'));
-    
-    // Exclude orders from due management
     conditions.push(sql`(${orders.orderSource} IS NULL OR ${orders.orderSource} != 'due-management')`);
-    
+
+    if (filters?.search?.trim()) {
+      const searchTrimmed = filters.search.trim();
+      const settings = await this.getSettings();
+      const invoicePrefix = settings?.invoicePrefix || "INV-";
+      const upperSearch = searchTrimmed.toUpperCase();
+      const upperPrefix = invoicePrefix.toUpperCase();
+      let orderNumberSearch = searchTrimmed;
+      let hasPrefix = false;
+      if (upperSearch.startsWith(upperPrefix)) {
+        orderNumberSearch = searchTrimmed.substring(invoicePrefix.length);
+        hasPrefix = true;
+      }
+      const isNumeric = /^\d+$/.test(orderNumberSearch);
+      const escapedPrefix = invoicePrefix.replace(/'/g, "''");
+      const searchPattern = `%${searchTrimmed}%`;
+      if (isNumeric) {
+        const exactOrderNumber = orderNumberSearch;
+        const invoiceMatchConditions: any[] = [eq(orders.orderNumber, exactOrderNumber)];
+        if (hasPrefix) {
+          invoiceMatchConditions.push(
+            sql`LOWER(${sql.raw(`'${escapedPrefix}'`)}) || ${orders.orderNumber} = LOWER(${sql.raw(`'${escapedPrefix}${exactOrderNumber}'`)})`
+          );
+        }
+        const searchConditions = [
+          invoiceMatchConditions.length === 1 ? invoiceMatchConditions[0] : or(...invoiceMatchConditions),
+          sql`LOWER(${orders.customerName}) LIKE LOWER(${searchPattern})`,
+        ];
+        conditions.push(or(...searchConditions));
+      } else {
+        conditions.push(sql`LOWER(${orders.customerName}) LIKE LOWER(${searchPattern})`);
+      }
+    }
+
+    if (filters?.paymentMethod && filters.paymentMethod !== "all") {
+      conditions.push(or(
+        eq(orders.paymentMethod, filters.paymentMethod),
+        sql`${orders.paymentMethod} LIKE ${`%${filters.paymentMethod}%`}`
+      ));
+    }
+    if (filters?.paymentStatus && filters.paymentStatus !== "all") {
+      conditions.push(eq(orders.paymentStatus, filters.paymentStatus));
+    }
+    if (filters?.minAmount !== undefined) conditions.push(gte(sql`CAST(${orders.total} AS DECIMAL)`, filters.minAmount));
+    if (filters?.maxAmount !== undefined) conditions.push(lte(sql`CAST(${orders.total} AS DECIMAL)`, filters.maxAmount));
+    if (filters?.dateFrom) conditions.push(gte(orders.createdAt, filters.dateFrom));
+    if (filters?.dateTo) conditions.push(lte(orders.createdAt, filters.dateTo));
+    if (filters?.months && filters.months.length > 0 && !(filters.dateFrom && filters.dateTo)) {
+      const monthConditions = filters.months.map((m) => {
+        const parts = m.trim().split("-");
+        const y = parseInt(parts[0], 10);
+        const mo = parseInt(parts[1], 10);
+        if (isNaN(y) || isNaN(mo)) return null;
+        return sql`(EXTRACT(YEAR FROM ${orders.createdAt})::int = ${y} AND EXTRACT(MONTH FROM ${orders.createdAt})::int = ${mo})`;
+      }).filter(Boolean);
+      if (monthConditions.length > 0) conditions.push(or(...monthConditions));
+    }
+
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-    
     const allOrders = await db.select().from(orders).where(whereClause);
-    
-    const totalSales = allOrders.length;
+
     let totalRevenue = 0;
     let totalDue = 0;
     let totalPaid = 0;
-    
     for (const order of allOrders) {
-      const total = parseFloat(order.total || "0");
-      const paid = parseFloat(order.paidAmount || "0");
-      const due = parseFloat(order.dueAmount || "0");
-      
-      totalRevenue += total;
-      totalPaid += paid;
-      totalDue += due;
+      totalRevenue += parseFloat(order.total || "0");
+      totalPaid += parseFloat(order.paidAmount || "0");
+      totalDue += parseFloat(order.dueAmount || "0");
     }
-    
+    const totalSales = allOrders.length;
     const averageOrderValue = totalSales > 0 ? totalRevenue / totalSales : 0;
-    
-    return {
-      totalSales,
-      totalRevenue,
-      totalDue,
-      totalPaid,
-      averageOrderValue,
-    };
+    return { totalSales, totalRevenue, totalDue, totalPaid, averageOrderValue };
   }
 
   async createOrder(insertOrder: InsertOrder): Promise<Order> {
@@ -1673,14 +1733,10 @@ export class DatabaseStorage implements IStorage {
     offset: number = 0,
     search?: string
   ): Promise<{ items: Array<{ product: string; quantity: number; revenue: number }>; total: number }> {
-    // Set endDate to end of day
-    const endOfDay = new Date(endDate);
-    endOfDay.setHours(23, 59, 59, 999);
-    
     const conditions: any[] = [
       eq(orders.status, 'completed'),
       gte(orders.createdAt, startDate),
-      lte(orders.createdAt, endOfDay),
+      lte(orders.createdAt, endDate),
       // Exclude orders from due management
       sql`(${orders.orderSource} IS NULL OR ${orders.orderSource} != 'due-management')`,
     ];
@@ -1768,11 +1824,57 @@ export class DatabaseStorage implements IStorage {
     return result.rowCount !== null && result.rowCount > 0;
   }
 
-  async getExpenses(branchId?: string | null): Promise<Expense[]> {
+  async getExpenses(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<Expense[]> {
+    const conditions: any[] = [];
     if (branchId) {
-      return await db.select().from(expenses).where(eq(expenses.branchId, branchId));
+      conditions.push(eq(expenses.branchId, branchId));
     }
-    return await db.select().from(expenses);
+    if (dateFrom) {
+      conditions.push(gte(expenses.expenseDate, dateFrom));
+    }
+    if (dateTo) conditions.push(lte(expenses.expenseDate, dateTo));
+    if (months && months.length > 0 && !(dateFrom && dateTo)) {
+      const monthConditions = months.map((m) => {
+        const parts = m.trim().split("-");
+        const y = parseInt(parts[0], 10);
+        const mo = parseInt(parts[1], 10);
+        if (isNaN(y) || isNaN(mo)) return null;
+        return sql`(EXTRACT(YEAR FROM ${expenses.expenseDate})::int = ${y} AND EXTRACT(MONTH FROM ${expenses.expenseDate})::int = ${mo})`;
+      }).filter(Boolean);
+      if (monthConditions.length > 0) {
+        conditions.push(or(...monthConditions));
+      }
+    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    return await db.select().from(expenses).where(whereClause);
+  }
+
+  async getExpenseStats(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<{ totalAmount: number; count: number; avgExpense: number }> {
+    const conditions: any[] = [];
+    if (branchId) conditions.push(eq(expenses.branchId, branchId));
+    if (dateFrom) conditions.push(gte(expenses.expenseDate, dateFrom));
+    if (dateTo) conditions.push(lte(expenses.expenseDate, dateTo));
+    if (months && months.length > 0 && !(dateFrom && dateTo)) {
+      const monthConditions = months.map((m) => {
+        const parts = m.trim().split("-");
+        const y = parseInt(parts[0], 10);
+        const mo = parseInt(parts[1], 10);
+        if (isNaN(y) || isNaN(mo)) return null;
+        return sql`(EXTRACT(YEAR FROM ${expenses.expenseDate})::int = ${y} AND EXTRACT(MONTH FROM ${expenses.expenseDate})::int = ${mo})`;
+      }).filter(Boolean);
+      if (monthConditions.length > 0) conditions.push(or(...monthConditions));
+    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    let query = db.select({
+      totalAmount: sql<string>`COALESCE(SUM(CAST(${expenses.total} AS DECIMAL)), 0)`,
+      count: sql<number>`count(*)`,
+    }).from(expenses);
+    if (whereClause) query = query.where(whereClause) as any;
+    const rows = await query;
+    const totalAmount = parseFloat(rows[0]?.totalAmount || "0");
+    const count = Number(rows[0]?.count || 0);
+    const avgExpense = count > 0 ? totalAmount / count : 0;
+    return { totalAmount, count, avgExpense };
   }
 
   async getExpense(id: string): Promise<Expense | undefined> {
@@ -3578,25 +3680,29 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getCustomersDueSummaryStats(
-    branchId?: string | null
+    branchId?: string | null,
+    dateFrom?: Date,
+    dateTo?: Date,
+    search?: string,
+    statusFilter?: string,
+    minAmount?: number,
+    maxAmount?: number
   ): Promise<{
     totalCustomers: number;
     pendingDues: number;
     totalOutstanding: number;
     totalCollected: number;
   }> {
-    // Get all customers summary without pagination or filters
-    // Pass undefined for all filter parameters to get ALL records
     const result = await this.getAllCustomersDueSummary(
       branchId,
-      undefined, // no limit
-      undefined, // no offset
-      undefined, // no search
-      undefined, // no statusFilter
-      undefined, // no minAmount
-      undefined, // no maxAmount
-      undefined, // no dateFrom
-      undefined  // no dateTo
+      undefined,
+      undefined,
+      search,
+      statusFilter,
+      minAmount,
+      maxAmount,
+      dateFrom,
+      dateTo
     );
     
     const totalCustomers = result.total;

@@ -313,9 +313,22 @@ export default function DueManagement() {
     from: startOfMonth(new Date()),
     to: endOfMonth(new Date()),
   });
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>("pending");
   const [minAmount, setMinAmount] = useState<string>("");
   const [maxAmount, setMaxAmount] = useState<string>("");
+
+  // When user selects months, set date range to first day of first month -> last day of last month
+  useEffect(() => {
+    if (selectedMonths.length === 0) return;
+    const sorted = [...selectedMonths].sort();
+    const [y1, m1] = sorted[0].split("-").map(Number);
+    const [y2, m2] = sorted[sorted.length - 1].split("-").map(Number);
+    setDateRange({
+      from: new Date(y1, m1 - 1, 1),
+      to: new Date(y2, m2, 0, 23, 59, 59, 999),
+    });
+  }, [selectedMonths.join(",")]);
 
   // Fetch data with pagination and server-side filtering
   const { data: customersSummaryData, isLoading: summaryLoading } = useQuery<{ summaries: CustomerDueSummary[]; total: number }>({
@@ -354,19 +367,27 @@ export default function DueManagement() {
   const customersSummary = customersSummaryData?.summaries || [];
   const customersTotal = customersSummaryData?.total || 0;
 
-  // Fetch summary stats for ALL records (not paginated)
+  // Fetch summary stats (same filters as list so cards reflect filtered results from backend)
+  const dueStatsParamsString = (() => {
+    const p = new URLSearchParams();
+    if (selectedBranchId) p.append("branchId", selectedBranchId);
+    if (dateRange.from) p.append("dateFrom", dateRange.from.toISOString());
+    if (dateRange.to) p.append("dateTo", dateRange.to.toISOString());
+    if (debouncedSearchTerm) p.append("search", debouncedSearchTerm);
+    if (statusFilter && statusFilter !== "all") p.append("statusFilter", statusFilter);
+    if (minAmount) p.append("minAmount", minAmount);
+    if (maxAmount) p.append("maxAmount", maxAmount);
+    return p.toString();
+  })();
   const { data: summaryStats } = useQuery<{
     totalCustomers: number;
     pendingDues: number;
     totalOutstanding: number;
     totalCollected: number;
   }>({
-    queryKey: ["/api/due/customers-summary/stats", { branchId: selectedBranchId }],
+    queryKey: ["/api/due/customers-summary/stats", dueStatsParamsString],
     queryFn: async () => {
-      const params = new URLSearchParams({
-        ...(selectedBranchId && { branchId: selectedBranchId }),
-      });
-      const response = await fetch(`/api/due/customers-summary/stats?${params}`);
+      const response = await fetch(`/api/due/customers-summary/stats?${dueStatsParamsString}`);
       if (!response.ok) throw new Error("Failed to fetch summary stats");
       return response.json();
     },
@@ -1388,6 +1409,39 @@ export default function DueManagement() {
                       </Popover>
                     </div>
                     <div className="space-y-2">
+                      <Label>Months</Label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" className="w-full justify-start text-left font-normal">
+                            {selectedMonths.length === 0
+                              ? "All months"
+                              : selectedMonths.length <= 2
+                                ? selectedMonths.map((m) => { const [y, mo] = m.split("-").map(Number); return format(new Date(y, mo - 1, 1), "MMM yyyy"); }).join(", ")
+                                : `${selectedMonths.length} months`}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[280px] p-0" align="start">
+                          <div className="max-h-[300px] overflow-y-auto p-2">
+                            {Array.from({ length: 24 }, (_, i) => {
+                              const d = new Date(); d.setMonth(d.getMonth() - (23 - i));
+                              const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+                              const checked = selectedMonths.includes(value);
+                              return (
+                                <div
+                                  key={value}
+                                  className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted cursor-pointer"
+                                  onClick={() => setSelectedMonths((prev) => (checked ? prev.filter((x) => x !== value) : [...prev, value].sort()))}
+                                >
+                                  <Checkbox checked={checked} onCheckedChange={() => {}} />
+                                  <span className="text-sm">{format(d, "MMMM yyyy")}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    <div className="space-y-2">
                       <Label>Min Amount</Label>
                       <Input
                         type="number"
@@ -1415,6 +1469,7 @@ export default function DueManagement() {
                             from: startOfMonth(new Date()),
                             to: endOfMonth(new Date()),
                           });
+                          setSelectedMonths([]);
                           setStatusFilter("pending");
                           setMinAmount("");
                           setMaxAmount("");

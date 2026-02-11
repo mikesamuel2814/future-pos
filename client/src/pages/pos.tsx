@@ -203,7 +203,7 @@ export default function POS() {
       if (!currentDraftId) {
         setOrderItems([]);
         setSelectedTable(null);
-        setCurrentOrderNumber(`${Math.floor(Math.random() * 100)}`);
+        setCurrentOrderNumber("");
         setCurrentDraftId(null);
         setManualDiscount(0);
         setDiscountType('amount');
@@ -1033,7 +1033,7 @@ export default function POS() {
     }
   };
 
-  const handleConfirmPayment = (paymentMethod: string, amountPaid: number, paymentSplits?: { method: string; amount: number }[], customerName?: string, customerPhone?: string, orderDate?: string, dateType?: "date" | "month") => {
+  const handleConfirmPayment = async (paymentMethod: string, amountPaid: number, paymentSplits?: { method: string; amount: number }[], customerName?: string, customerPhone?: string, orderDate?: string, dateType?: "date" | "month") => {
     const originalSubtotal = calculateOriginalSubtotal(orderItems);
     const totalItemDiscounts = calculateTotalItemDiscounts(orderItems);
     const subtotal = calculateSubtotal(orderItems);
@@ -1150,41 +1150,20 @@ export default function POS() {
       orderData.paymentSplits = JSON.stringify(paymentSplits);
     }
 
-    // If completing an existing draft, update it instead of creating a new one
-    if (currentDraftId) {
-      updateOrderMutation.mutate({
-        orderId: currentDraftId,
-        orderData,
-      }, {
-        onSuccess: () => {
-          setCurrentDraftId(null);
-          setOrderItems([]);
-          setSelectedTable(null);
-          setCurrentOrderNumber(`${Math.floor(Math.random() * 100)}`);
-          setManualDiscount(0);
-          setDiscountType('amount');
-        },
-      });
-    } else {
-      createOrderMutation.mutate(orderData);
-    }
-
     const totalDiscount = totalItemDiscounts + globalDiscountAmount;
-    
-    setReceiptData({
-      orderNumber: currentOrderNumber,
-        items: orderItems.map((item) => {
-          const itemPrice = getItemPrice(item);
-          return {
-            product: item.product,
-            quantity: item.quantity,
-            price: itemPrice.toString(),
-            total: calculateItemTotal(item).toString(),
-            itemDiscount: item.itemDiscount,
-            itemDiscountType: item.itemDiscountType,
-            selectedSize: item.selectedSize,
-          };
-        }),
+    const receiptPayload = {
+      items: orderItems.map((item) => {
+        const itemPrice = getItemPrice(item);
+        return {
+          product: item.product,
+          quantity: item.quantity,
+          price: itemPrice.toString(),
+          total: calculateItemTotal(item).toString(),
+          itemDiscount: item.itemDiscount,
+          itemDiscountType: item.itemDiscountType,
+          selectedSize: item.selectedSize,
+        };
+      }),
       originalSubtotal,
       itemDiscounts: totalItemDiscounts,
       subtotal,
@@ -1196,10 +1175,58 @@ export default function POS() {
       paymentMethod: paymentSplits && paymentSplits.length > 0 ? undefined : paymentMethod,
       paymentSplits: paymentSplits && paymentSplits.length > 0 ? JSON.stringify(paymentSplits) : undefined,
       changeDue: changeDue > 0 ? changeDue : undefined,
-    });
+    };
 
     setPaymentModalOpen(false);
-    setReceiptModalOpen(true);
+
+    const openReceiptWithOrderNumber = (orderNumber: string) => {
+      setReceiptData({ ...receiptPayload, orderNumber });
+      setReceiptModalOpen(true);
+    };
+
+    const resetCartAndNewOrder = () => {
+      setCurrentDraftId(null);
+      setOrderItems([]);
+      setSelectedTable(null);
+      setCurrentOrderNumber("");
+      setManualDiscount(0);
+      setDiscountType("amount");
+    };
+
+    const runSaveAndReceipt = async () => {
+      try {
+        if (currentDraftId) {
+          const updatedOrder = await updateOrderMutation.mutateAsync({
+            orderId: currentDraftId,
+            orderData,
+          });
+          const invoiceNumber = updatedOrder?.orderNumber ?? currentOrderNumber;
+          openReceiptWithOrderNumber(String(invoiceNumber));
+          resetCartAndNewOrder();
+          queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/sales"] });
+          toast({ title: "Success", description: "Order processed successfully" });
+        } else {
+          const res = await createOrderMutation.mutateAsync(orderData);
+          const createdOrder = await res.json();
+          const invoiceNumber = createdOrder?.orderNumber ?? currentOrderNumber;
+          openReceiptWithOrderNumber(String(invoiceNumber));
+          resetCartAndNewOrder();
+          queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/sales"] });
+          toast({ title: "Success", description: "Order processed successfully" });
+        }
+      } catch (error: any) {
+        toast({
+          title: "Error",
+          description: error?.message || "Failed to save order",
+          variant: "destructive",
+        });
+      }
+    };
+    runSaveAndReceipt();
   };
 
   const handlePrintReceipt = () => {
@@ -1213,7 +1240,7 @@ export default function POS() {
     setOrderItems([]);
     setSelectedTable(null);
     setDiningOption("dine-in");
-    setCurrentOrderNumber(`${Math.floor(Math.random() * 100)}`);
+    setCurrentOrderNumber("");
     setCurrentDraftId(null);
     setManualDiscount(0);
     setDiscountType('amount');

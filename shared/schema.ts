@@ -89,6 +89,7 @@ export const orders = pgTable("orders", {
   diningOption: text("dining_option").notNull().default("dine-in"),
   customerName: text("customer_name"),
   customerPhone: text("customer_phone"),
+  customerContactType: text("customer_contact_type"), // For web orders: phone, whatsapp, telegram, facebook, other
   orderSource: text("order_source").notNull().default("pos"),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull(),
   discount: decimal("discount", { precision: 10, scale: 2 }).notNull().default("0"),

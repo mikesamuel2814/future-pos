@@ -1,4 +1,5 @@
 import { createContext, useContext, ReactNode } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 
 interface AuthUser {
@@ -18,22 +19,29 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function isPublicCustomerRoute(path: string): boolean {
+  return path === "/menu" || path.startsWith("/menu?") || path === "/order" || path.startsWith("/order?");
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // Query user from server - this relies on session cookies
+  const [path] = useLocation();
+  const skipSession = isPublicCustomerRoute(path);
+
+  // Skip session fetch on public customer portal to avoid 401 in console; auth not required there
   const { data: user, isLoading } = useQuery<AuthUser>({
     queryKey: ["/api/auth/session"],
     retry: false,
-    // Always refetch on mount to get fresh session data
     refetchOnMount: true,
     refetchOnWindowFocus: true,
-    // Keep data fresh for 1 minute
     staleTime: 60 * 1000,
+    enabled: !skipSession,
   });
 
   const isAuthenticated = !!user;
+  const isLoadingResolved = skipSession ? false : isLoading;
 
   return (
-    <AuthContext.Provider value={{ user: user || null, isLoading, isAuthenticated }}>
+    <AuthContext.Provider value={{ user: user || null, isLoading: isLoadingResolved, isAuthenticated }}>
       {children}
     </AuthContext.Provider>
   );

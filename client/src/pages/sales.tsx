@@ -132,6 +132,7 @@ export default function SalesManage() {
   const [maxAmount, setMaxAmount] = useState<string>("");
   const [orderItemSearch, setOrderItemSearch] = useState<string>("");
   const debouncedOrderItemSearch = useDebounce(orderItemSearch, 300);
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [allOrderItems, setAllOrderItems] = useState<Map<string, OrderItemWithProduct[]>>(new Map());
   const [paymentSplits, setPaymentSplits] = useState<PaymentSplit[]>([]);
   const [newPaymentMethod, setNewPaymentMethod] = useState<string>("cash");
@@ -152,6 +153,7 @@ export default function SalesManage() {
   const [newSaleDiscountType, setNewSaleDiscountType] = useState<'amount' | 'percentage'>('amount');
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [selectedProductQuantity, setSelectedProductQuantity] = useState("1");
+  const [exporting, setExporting] = useState(false);
   const { toast } = useToast();
   const { hasPermission } = usePermissions();
   const { selectedBranchId } = useBranch();
@@ -249,68 +251,43 @@ export default function SalesManage() {
   // Reset to page 1 when filters change
   useEffect(() => {
     setSalesPage(1);
-  }, [debouncedSearchTerm, paymentMethodFilter, paymentStatusFilter, minAmount, maxAmount, dateFilter, startDate, endDate, debouncedOrderItemSearch, selectedBranchId]);
+  }, [debouncedSearchTerm, paymentMethodFilter, paymentStatusFilter, minAmount, maxAmount, dateFilter, startDate, endDate, debouncedOrderItemSearch, selectedBranchId, selectedMonths]);
 
-  // Fetch paginated sales with backend filtering
+  // Build query params for sales list/export (shared).
+  // When months are selected, use exact date-time range in user's local time (toISOString for API)
+  // so filtering is by date+time and not affected by server timezone (fixes Jan export including Feb 1st sales).
+  const getSalesQueryParams = useMemo(() => {
+    const params = new URLSearchParams();
+    if (selectedBranchId) params.append("branchId", selectedBranchId);
+    if (debouncedSearchTerm?.trim()) params.append("search", debouncedSearchTerm);
+    if (paymentMethodFilter !== "all") params.append("paymentMethod", paymentMethodFilter);
+    if (paymentStatusFilter !== "all") params.append("paymentStatus", paymentStatusFilter);
+    if (minAmount?.trim() && !isNaN(parseFloat(minAmount))) params.append("minAmount", minAmount);
+    if (maxAmount?.trim() && !isNaN(parseFloat(maxAmount))) params.append("maxAmount", maxAmount);
+    if (selectedMonths.length > 0) {
+      const sorted = [...selectedMonths].sort();
+      const [y1, m1] = sorted[0].split("-").map(Number);
+      const [y2, m2] = sorted[sorted.length - 1].split("-").map(Number);
+      const start = new Date(y1, m1 - 1, 1, 0, 0, 0, 0);
+      const end = new Date(y2, m2, 0, 23, 59, 59, 999);
+      params.append("dateFrom", start.toISOString());
+      params.append("dateTo", end.toISOString());
+    } else {
+      if (getDateRangeFromFilter.dateFrom) params.append("dateFrom", getDateRangeFromFilter.dateFrom.toISOString());
+      if (getDateRangeFromFilter.dateTo) params.append("dateTo", getDateRangeFromFilter.dateTo.toISOString());
+    }
+    if (debouncedOrderItemSearch?.trim()) params.append("productSearch", debouncedOrderItemSearch);
+    return params;
+  }, [selectedBranchId, debouncedSearchTerm, paymentMethodFilter, paymentStatusFilter, minAmount, maxAmount, selectedMonths, getDateRangeFromFilter.dateFrom, getDateRangeFromFilter.dateTo, debouncedOrderItemSearch]);
+
+  // Fetch paginated sales with backend filtering (key includes params string so month/list filters trigger refetch)
+  const salesParamsString = getSalesQueryParams.toString();
   const { data: salesData, isLoading } = useQuery<{ orders: Order[]; total: number }>({
-    queryKey: [
-      "/api/orders/paginated",
-      {
-        branchId: selectedBranchId,
-        page: salesPage,
-        limit: salesPageSize,
-        search: debouncedSearchTerm,
-        paymentMethod: paymentMethodFilter !== "all" ? paymentMethodFilter : undefined,
-        paymentStatus: paymentStatusFilter !== "all" ? paymentStatusFilter : undefined,
-        minAmount: minAmount ? parseFloat(minAmount) : undefined,
-        maxAmount: maxAmount ? parseFloat(maxAmount) : undefined,
-        dateFrom: getDateRangeFromFilter.dateFrom?.toISOString(),
-        dateTo: getDateRangeFromFilter.dateTo?.toISOString(),
-        productSearch: debouncedOrderItemSearch || undefined,
-      }
-    ],
+    queryKey: ["/api/orders/paginated", salesPage, salesPageSize, salesParamsString],
     queryFn: async () => {
-      const params = new URLSearchParams({
-        page: salesPage.toString(),
-        limit: salesPageSize.toString(),
-      });
-      
-      if (selectedBranchId) {
-        params.append("branchId", selectedBranchId);
-      }
-      
-      if (debouncedSearchTerm && debouncedSearchTerm.trim()) {
-        params.append("search", debouncedSearchTerm);
-      }
-      
-      if (paymentMethodFilter !== "all") {
-        params.append("paymentMethod", paymentMethodFilter);
-      }
-      
-      if (paymentStatusFilter !== "all") {
-        params.append("paymentStatus", paymentStatusFilter);
-      }
-      
-      if (minAmount && minAmount.trim() && !isNaN(parseFloat(minAmount))) {
-        params.append("minAmount", minAmount);
-      }
-      
-      if (maxAmount && maxAmount.trim() && !isNaN(parseFloat(maxAmount))) {
-        params.append("maxAmount", maxAmount);
-      }
-      
-      if (getDateRangeFromFilter.dateFrom) {
-        params.append("dateFrom", getDateRangeFromFilter.dateFrom.toISOString());
-      }
-      
-      if (getDateRangeFromFilter.dateTo) {
-        params.append("dateTo", getDateRangeFromFilter.dateTo.toISOString());
-      }
-      
-      if (debouncedOrderItemSearch && debouncedOrderItemSearch.trim()) {
-        params.append("productSearch", debouncedOrderItemSearch);
-      }
-      
+      const params = new URLSearchParams(salesParamsString);
+      params.set("page", salesPage.toString());
+      params.set("limit", salesPageSize.toString());
       const response = await fetch(`/api/orders/paginated?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch sales");
       return response.json();
@@ -320,7 +297,7 @@ export default function SalesManage() {
   const sales = salesData?.orders || [];
   const salesTotal = salesData?.total || 0;
 
-  // Fetch sales stats
+  // Fetch sales stats (same filters as list so cards reflect filtered totals from backend)
   const { data: salesStats } = useQuery<{
     totalSales: number;
     totalRevenue: number;
@@ -328,12 +305,9 @@ export default function SalesManage() {
     totalPaid: number;
     averageOrderValue: number;
   }>({
-    queryKey: ["/api/sales/stats", { branchId: selectedBranchId }],
+    queryKey: ["/api/sales/stats", salesParamsString],
     queryFn: async () => {
-      const params = new URLSearchParams({
-        ...(selectedBranchId && { branchId: selectedBranchId }),
-      });
-      const response = await fetch(`/api/sales/stats?${params}`, { credentials: "include" });
+      const response = await fetch(`/api/sales/stats?${salesParamsString}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch sales stats");
       return response.json();
     },
@@ -813,69 +787,75 @@ export default function SalesManage() {
     return colors[status] || colors.pending;
   };
 
-  const exportToExcel = () => {
-    const exportData = filteredSales.map((sale) => ({
-      "Sale ID": sale.id,
-      "Invoice No": `INV-${sale.orderNumber}`,
-      "Date & Time": format(new Date(sale.createdAt), "PPpp"),
-      "Customer Name": sale.customerName || "Walk-in Customer",
-      "Dining Option": sale.diningOption,
-      "Subtotal": `$${sale.subtotal}`,
-      "Discount Amount": `$${sale.discount}`,
-      "Total Amount": `$${sale.total}`,
-      "Pay by": sale.paymentMethod || "N/A",
-      "Payment Status": sale.paymentStatus,
-      "Order Status": sale.status,
-    }));
-
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Sales");
-
-    const fileName = `sales_report_${format(new Date(), "yyyy-MM-dd")}.xlsx`;
-    XLSX.writeFile(workbook, fileName);
-
-    toast({
-      title: "Success",
-      description: "Sales data exported to Excel successfully",
-    });
+  const exportToExcel = async () => {
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/orders/export?${getSalesQueryParams}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch export data");
+      const { orders: exportOrders } = await response.json();
+      const list = (exportOrders || []).filter((s: Order) => s.orderSource !== "due-management");
+      const exportData = list.map((sale: Order) => ({
+        "Sale ID": sale.id,
+        "Invoice No": `INV-${sale.orderNumber}`,
+        "Date & Time": format(new Date(sale.createdAt), "PPpp"),
+        "Customer Name": sale.customerName || "Walk-in Customer",
+        "Dining Option": sale.diningOption,
+        "Subtotal": `$${sale.subtotal}`,
+        "Discount Amount": `$${sale.discount}`,
+        "Total Amount": `$${sale.total}`,
+        "Pay by": sale.paymentMethod || "N/A",
+        "Payment Status": sale.paymentStatus,
+        "Order Status": sale.status,
+      }));
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Sales");
+      const fileName = `sales_report_${format(new Date(), "yyyy-MM-dd")}.xlsx`;
+      XLSX.writeFile(workbook, fileName);
+      toast({ title: "Success", description: `Exported ${list.length} sales to Excel` });
+    } catch (e) {
+      toast({ title: "Export Failed", description: e instanceof Error ? e.message : "Failed to export", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const exportToPDF = () => {
-    const doc = new jsPDF();
-
-    doc.setFontSize(18);
-    doc.text("Sales Report", 14, 22);
-    
-    doc.setFontSize(11);
-    doc.text(`Generated: ${format(new Date(), "PPpp")}`, 14, 32);
-
-    const tableData = filteredSales.map((sale) => [
-      sale.id,
-      `INV-${sale.orderNumber}`,
-      format(new Date(sale.createdAt), "PPpp"),
-      sale.customerName || "Walk-in Customer",
-      `$${sale.discount}`,
-      `$${sale.total}`,
-      sale.paymentMethod || "N/A",
-      sale.paymentStatus,
-    ]);
-
-    autoTable(doc, {
-      startY: 40,
-      head: [["Sale ID", "Invoice No", "Date & Time", "Customer", "Discount", "Total", "Pay by", "Payment"]],
-      body: tableData,
-      theme: "striped",
-      headStyles: { fillColor: [234, 88, 12] },
-    });
-
-    const fileName = `sales_report_${format(new Date(), "yyyy-MM-dd")}.pdf`;
-    doc.save(fileName);
-
-    toast({
-      title: "Success",
-      description: "Sales data exported to PDF successfully",
-    });
+  const exportToPDF = async () => {
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/orders/export?${getSalesQueryParams}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch export data");
+      const { orders: exportOrders } = await response.json();
+      const list = (exportOrders || []).filter((s: Order) => s.orderSource !== "due-management");
+      const doc = new jsPDF();
+      doc.setFontSize(18);
+      doc.text("Sales Report", 14, 22);
+      doc.setFontSize(11);
+      doc.text(`Generated: ${format(new Date(), "PPpp")} (${list.length} records)`, 14, 32);
+      const tableData = list.map((sale: Order) => [
+        sale.id,
+        `INV-${sale.orderNumber}`,
+        format(new Date(sale.createdAt), "PPpp"),
+        sale.customerName || "Walk-in Customer",
+        `$${sale.discount}`,
+        `$${sale.total}`,
+        sale.paymentMethod || "N/A",
+        sale.paymentStatus,
+      ]);
+      autoTable(doc, {
+        startY: 40,
+        head: [["Sale ID", "Invoice No", "Date & Time", "Customer", "Discount", "Total", "Pay by", "Payment"]],
+        body: tableData,
+        theme: "striped",
+        headStyles: { fillColor: [234, 88, 12] },
+      });
+      doc.save(`sales_report_${format(new Date(), "yyyy-MM-dd")}.pdf`);
+      toast({ title: "Success", description: `Exported ${list.length} sales to PDF` });
+    } catch (e) {
+      toast({ title: "Export Failed", description: e instanceof Error ? e.message : "Failed to export", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleDownloadSample = () => {
@@ -1104,9 +1084,9 @@ export default function SalesManage() {
             {hasPermission("reports.export") && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button data-testid="button-export">
+                  <Button data-testid="button-export" disabled={exporting}>
                     <Download className="w-4 h-4 mr-2" />
-                    Export
+                    {exporting ? "Exporting…" : "Export"}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -1291,6 +1271,7 @@ export default function SalesManage() {
                     setDateFilter("all");
                     setStartDate(undefined);
                     setEndDate(undefined);
+                    setSelectedMonths([]);
                   }}
                 >
                   <X className="w-4 h-4 mr-2" />
@@ -1355,6 +1336,48 @@ export default function SalesManage() {
                     value={maxAmount}
                     onChange={(e) => setMaxAmount(e.target.value)}
                   />
+                </div>
+
+                {/* Months (multi-select) */}
+                <div className="space-y-2">
+                  <Label>Months</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className="w-full justify-start text-left font-normal">
+                        {selectedMonths.length === 0
+                          ? "All months"
+                          : selectedMonths.length <= 2
+                            ? selectedMonths.map((m) => {
+                                const [y, mo] = m.split("-").map(Number);
+                                return format(new Date(y, mo - 1, 1), "MMM yyyy");
+                              }).join(", ")
+                            : `${selectedMonths.length} months selected`}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[280px] p-0" align="start">
+                      <div className="max-h-[300px] overflow-y-auto p-2">
+                        {Array.from({ length: 24 }, (_, i) => {
+                          const d = new Date();
+                          d.setMonth(d.getMonth() - (23 - i));
+                          const y = d.getFullYear();
+                          const mo = String(d.getMonth() + 1).padStart(2, "0");
+                          const value = `${y}-${mo}`;
+                          const label = format(d, "MMMM yyyy");
+                          const checked = selectedMonths.includes(value);
+                          return (
+                            <div
+                              key={value}
+                              className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted cursor-pointer"
+                              onClick={() => setSelectedMonths((prev) => (checked ? prev.filter((x) => x !== value) : [...prev, value].sort()))}
+                            >
+                              <Checkbox checked={checked} onCheckedChange={() => {}} />
+                              <span className="text-sm">{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 </div>
               </div>
 

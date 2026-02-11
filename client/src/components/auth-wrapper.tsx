@@ -6,15 +6,20 @@ export function AuthWrapper({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation();
   const { user, isLoading } = useAuth();
 
-  // Redirect to login if not authenticated and not already on login page
+  // Public routes that do not require authentication (customer order/menu)
+  const isPublicOrderOrMenu =
+    location === "/order" || location.startsWith("/order?") ||
+    location === "/menu" || location.startsWith("/menu?");
+
+  // Redirect to login only if not authenticated AND not on login AND not on public customer page
   useEffect(() => {
-    if (!isLoading && !user && location !== "/login") {
+    if (!isLoading && !user && location !== "/login" && !isPublicOrderOrMenu) {
       setLocation("/login");
     }
-  }, [isLoading, user, location, setLocation]);
+  }, [isLoading, user, location, setLocation, isPublicOrderOrMenu]);
 
-  // Allow login page to render without authentication
-  if (location === "/login") {
+  // Allow login and public order/menu page without authentication (authless)
+  if (location === "/login" || isPublicOrderOrMenu) {
     return <>{children}</>;
   }
 

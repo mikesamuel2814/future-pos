@@ -1086,7 +1086,6 @@ export default function Inventory() {
 
   const handleExportExcel = async () => {
     try {
-      // Fetch all products for export (no pagination)
       const params = new URLSearchParams();
       if (selectedBranchId) params.append("branchId", selectedBranchId);
       if (selectedCategory !== "all") params.append("categoryId", selectedCategory);
@@ -1097,13 +1096,13 @@ export default function Inventory() {
       if (dateRange?.startDate) params.append("dateFrom", dateRange.startDate.toISOString());
       if (dateRange?.endDate) params.append("dateTo", dateRange.endDate.toISOString());
       if (shortageFilter) params.append("hasShortage", "true");
-      params.append("limit", "10000"); // Large limit to get all products
+      params.append("limit", "50000");
       params.append("offset", "0");
       
       const res = await fetch(`/api/products?${params.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch products for export");
       const data = await res.json();
-      const allProducts = data.products || [];
+      const allProducts = Array.isArray(data) ? data : (data.products || []);
 
       const hasSizePrices = (p: Product) => p.sizePrices && Object.keys((p.sizePrices as Record<string, string>) || {}).length > 0;
       const exportData = allProducts.map((p: Product) => {
@@ -1146,7 +1145,6 @@ export default function Inventory() {
 
   const handleExportCSV = async () => {
     try {
-      // Fetch all products for export (no pagination)
       const params = new URLSearchParams();
       if (selectedBranchId) params.append("branchId", selectedBranchId);
       if (selectedCategory !== "all") params.append("categoryId", selectedCategory);
@@ -1157,13 +1155,13 @@ export default function Inventory() {
       if (dateRange?.startDate) params.append("dateFrom", dateRange.startDate.toISOString());
       if (dateRange?.endDate) params.append("dateTo", dateRange.endDate.toISOString());
       if (shortageFilter) params.append("hasShortage", "true");
-      params.append("limit", "10000"); // Large limit to get all products
+      params.append("limit", "50000");
       params.append("offset", "0");
       
       const res = await fetch(`/api/products?${params.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch products for export");
       const data = await res.json();
-      const allProducts = data.products || [];
+      const allProducts = Array.isArray(data) ? data : (data.products || []);
 
       const hasSizePrices = (p: Product) => p.sizePrices && Object.keys((p.sizePrices as Record<string, string>) || {}).length > 0;
       const headers = ["Product Name", "Category", "Purchase Price (USD)", "Selling Price (USD)", "Quantity", "Unit", "Sold Out", "Available", "Status"];

@@ -1,6 +1,8 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
+import type { WebSocketServer } from "ws";
 import { storage } from "./storage";
+import { createWebSocketServer, emitWebOrderCreated } from "./websocket";
 import { insertOrderSchema, insertOrderItemSchema, insertExpenseCategorySchema, insertExpenseSchema, insertCategorySchema, insertProductSchema, insertPurchaseSchema, insertTableSchema, insertEmployeeSchema, insertAttendanceSchema, insertLeaveSchema, insertPayrollSchema, insertStaffSalarySchema, insertPositionSchema, insertDepartmentSchema, insertSettingsSchema, insertUserSchema, insertInventoryAdjustmentSchema, insertBranchSchema, insertPaymentAdjustmentSchema, insertCustomerSchema, insertDuePaymentSchema, insertDuePaymentAllocationSchema, insertMainProductSchema, insertMainProductItemSchema, insertUnitSchema, InsertInventoryAdjustment } from "@shared/schema";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -68,6 +70,22 @@ const uploadMultiple = multer({
 const createOrderWithItemsSchema = insertOrderSchema.extend({
   items: z.array(insertOrderItemSchema.omit({ orderId: true })),
 });
+
+const publicOrderItemSchema = z.object({
+  productId: z.string(),
+  quantity: z.number().int().min(1),
+  selectedSize: z.string().optional(),
+});
+const publicOrderSchema = z.object({
+  branchId: z.string().optional(), // no longer required; single store
+  customerName: z.string().min(1, "Name is required"),
+  customerPhone: z.string().min(1, "Phone is required"),
+  customerContactType: z.enum(["phone", "whatsapp", "telegram", "facebook", "other"]).optional(),
+  paymentMethod: z.enum(["cash_on_delivery", "due"]).optional(), // public web: pay on delivery or pay later (due)
+  items: z.array(publicOrderItemSchema).min(1, "At least one item is required"),
+});
+
+let webSocketServer: WebSocketServer | null = null;
 
 function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.session.userId && !req.session.branchId) {
@@ -173,7 +191,13 @@ function requirePermission(permission: string) {
   };
 }
 
-function getDateRange(filter: string, customDate?: string): { startDate: Date; endDate: Date } {
+function getDateRange(filter: string, customDate?: string, clientStart?: string, clientEnd?: string): { startDate: Date; endDate: Date } {
+  // Use client-provided range when given (ensures "today" etc. use user's timezone, not server's)
+  if (clientStart && clientEnd) {
+    const start = new Date(clientStart);
+    const end = new Date(clientEnd);
+    if (!isNaN(start.getTime()) && !isNaN(end.getTime())) return { startDate: start, endDate: end };
+  }
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   
@@ -240,6 +264,109 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Health check endpoint (must be before authentication middleware)
   app.get("/health", async (_req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // Public API for customer web ordering (no auth)
+  app.get("/api/public/branches", async (_req, res) => {
+    try {
+      const branches = await storage.getBranches();
+      const active = branches.filter((b) => b.isActive === "true");
+      res.json(active.map(({ id, name, location, contactPerson, phone, email }) => ({ id, name, location, contactPerson, phone, email })));
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch branches" });
+    }
+  });
+
+  app.get("/api/public/categories", async (_req, res) => {
+    try {
+      const categories = await storage.getCategories();
+      res.json(categories);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch categories" });
+    }
+  });
+
+  app.get("/api/public/products", async (req, res) => {
+    try {
+      const branchId = (req.query.branchId as string) || undefined;
+      const products = await storage.getProducts(branchId);
+      res.json(products);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch products" });
+    }
+  });
+
+  app.post("/api/public/orders", async (req, res) => {
+    try {
+      const parsed = publicOrderSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+      }
+      const { branchId: branchIdPayload, customerName, customerPhone, customerContactType, paymentMethod: webPaymentMethod, items: rawItems } = parsed.data;
+      const branchId = branchIdPayload || null;
+
+      const orderItems: Array<{ productId: string; quantity: number; price: string; total: string; selectedSize?: string }> = [];
+      let subtotal = 0;
+
+      for (const item of rawItems) {
+        const product = await storage.getProduct(item.productId);
+        if (!product) {
+          return res.status(400).json({ error: `Product not found: ${item.productId}` });
+        }
+        let price: number;
+        if (item.selectedSize && product.sizePrices && typeof product.sizePrices === "object" && (product.sizePrices as Record<string, string>)[item.selectedSize] != null) {
+          price = parseFloat((product.sizePrices as Record<string, string>)[item.selectedSize]);
+        } else {
+          price = parseFloat(String(product.price));
+        }
+        if (isNaN(price) || price < 0) price = 0;
+        const total = price * item.quantity;
+        subtotal += total;
+        orderItems.push({
+          productId: product.id,
+          quantity: item.quantity,
+          price: price.toFixed(2),
+          total: total.toFixed(2),
+          ...(item.selectedSize && { selectedSize: item.selectedSize }),
+        });
+      }
+
+      const discount = 0;
+      const total = subtotal;
+      const isDue = webPaymentMethod === "due";
+      const orderData = {
+        branchId,
+        tableId: undefined,
+        customerId: undefined,
+        diningOption: "takeaway" as const,
+        customerName,
+        customerPhone,
+        customerContactType: customerContactType || null,
+        orderSource: "web" as const,
+        subtotal: subtotal.toFixed(2),
+        discount: discount.toFixed(2),
+        discountType: "amount" as const,
+        total: total.toFixed(2),
+        dueAmount: isDue ? total.toFixed(2) : undefined,
+        paidAmount: "0",
+        status: "web-pending" as const,
+        paymentStatus: isDue ? ("due" as const) : ("pending" as const),
+        paymentMethod: webPaymentMethod === "cash_on_delivery" ? "cash" : (isDue ? "due" : null),
+        paymentSplits: null,
+      };
+
+      const order = await storage.createOrderWithItems(orderData, orderItems);
+      const orderWithItems = { ...order, items: await storage.getOrderItemsWithProducts(order.id) };
+
+      if (webSocketServer) {
+        emitWebOrderCreated(webSocketServer, branchId ?? "", orderWithItems);
+      }
+
+      res.status(201).json(orderWithItems);
+    } catch (error) {
+      console.error("Error creating web order:", error);
+      res.status(500).json({ error: "Failed to create order", message: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   // Public API endpoints for Central Dashboard (API key authentication)
@@ -1030,12 +1157,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         maxAmount, 
         dateFrom, 
         dateTo,
-        productSearch 
+        productSearch,
+        months: monthsParam
       } = req.query;
       
       const pageNum = parseInt(page as string, 10);
       const limitNum = parseInt(limit as string, 10);
       const offset = (pageNum - 1) * limitNum;
+      
+      // Parse months (comma-separated YYYY-MM)
+      let months: string[] | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean);
+      }
       
       // Parse and validate minAmount
       let parsedMinAmount: number | undefined;
@@ -1088,7 +1222,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         parsedMaxAmount,
         parsedDateFrom,
         parsedDateTo,
-        productSearch && typeof productSearch === "string" && productSearch.trim() ? productSearch.trim() : undefined
+        productSearch && typeof productSearch === "string" && productSearch.trim() ? productSearch.trim() : undefined,
+        months
       );
       
       res.json(result);
@@ -1098,10 +1233,110 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Export all sales (orders) matching current filters - no pagination limit
+  app.get("/api/orders/export", async (req, res) => {
+    try {
+      const { 
+        branchId, 
+        search, 
+        paymentMethod, 
+        paymentStatus, 
+        minAmount, 
+        maxAmount, 
+        dateFrom, 
+        dateTo,
+        productSearch,
+        months: monthsParam
+      } = req.query;
+      
+      let months: string[] | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean);
+      }
+      
+      let parsedMinAmount: number | undefined;
+      if (minAmount && typeof minAmount === "string" && minAmount.trim()) {
+        const parsed = parseFloat(minAmount);
+        if (!isNaN(parsed) && parsed >= 0) parsedMinAmount = parsed;
+      }
+      let parsedMaxAmount: number | undefined;
+      if (maxAmount && typeof maxAmount === "string" && maxAmount.trim()) {
+        const parsed = parseFloat(maxAmount);
+        if (!isNaN(parsed) && parsed >= 0) parsedMaxAmount = parsed;
+      }
+      let parsedDateFrom: Date | undefined;
+      if (dateFrom && typeof dateFrom === "string" && dateFrom.trim()) {
+        const d = new Date(dateFrom);
+        if (!isNaN(d.getTime())) parsedDateFrom = d;
+      }
+      let parsedDateTo: Date | undefined;
+      if (dateTo && typeof dateTo === "string" && dateTo.trim()) {
+        const d = new Date(dateTo);
+        if (!isNaN(d.getTime())) parsedDateTo = d;
+      }
+      
+      const result = await storage.getOrdersPaginated(
+        branchId as string | undefined,
+        50000,
+        0,
+        search && typeof search === "string" && search.trim() ? search.trim() : undefined,
+        paymentMethod && typeof paymentMethod === "string" && paymentMethod !== "all" ? paymentMethod : undefined,
+        paymentStatus && typeof paymentStatus === "string" && paymentStatus !== "all" ? paymentStatus : undefined,
+        parsedMinAmount,
+        parsedMaxAmount,
+        parsedDateFrom,
+        parsedDateTo,
+        productSearch && typeof productSearch === "string" && productSearch.trim() ? productSearch.trim() : undefined,
+        months
+      );
+      
+      res.json({ orders: result.orders });
+    } catch (error) {
+      console.error("Error exporting orders:", error);
+      res.status(500).json({ error: "Failed to export orders" });
+    }
+  });
+
   app.get("/api/sales/stats", async (req, res) => {
     try {
-      const { branchId } = req.query;
-      const stats = await storage.getSalesStats(branchId as string | undefined);
+      const { branchId, dateFrom, dateTo, months: monthsParam, paymentMethod, paymentStatus, minAmount, maxAmount, search } = req.query;
+      let months: string[] | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean);
+      }
+      let parsedDateFrom: Date | undefined;
+      if (dateFrom && typeof dateFrom === "string") {
+        const d = new Date(dateFrom);
+        if (!isNaN(d.getTime())) parsedDateFrom = d;
+      }
+      let parsedDateTo: Date | undefined;
+      if (dateTo && typeof dateTo === "string") {
+        const d = new Date(dateTo);
+        if (!isNaN(d.getTime())) parsedDateTo = d;
+      }
+      let parsedMin: number | undefined;
+      if (minAmount && typeof minAmount === "string") {
+        const n = parseFloat(minAmount);
+        if (!isNaN(n) && n >= 0) parsedMin = n;
+      }
+      let parsedMax: number | undefined;
+      if (maxAmount && typeof maxAmount === "string") {
+        const n = parseFloat(maxAmount);
+        if (!isNaN(n) && n >= 0) parsedMax = n;
+      }
+      const filters = (parsedDateFrom != null || parsedDateTo != null || (months && months.length > 0) || (paymentMethod && typeof paymentMethod === "string" && paymentMethod !== "all") || (paymentStatus && typeof paymentStatus === "string" && paymentStatus !== "all") || parsedMin != null || parsedMax != null || (search && typeof search === "string" && search.trim()))
+        ? {
+            dateFrom: parsedDateFrom,
+            dateTo: parsedDateTo,
+            months,
+            paymentMethod: paymentMethod as string | undefined,
+            paymentStatus: paymentStatus as string | undefined,
+            minAmount: parsedMin,
+            maxAmount: parsedMax,
+            search: typeof search === "string" && search.trim() ? search.trim() : undefined,
+          }
+        : undefined;
+      const stats = await storage.getSalesStats(branchId as string | undefined, filters);
       res.json(stats);
     } catch (error) {
       console.error("Error fetching sales stats:", error);
@@ -1333,24 +1568,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/orders/:id/accept", async (req, res) => {
+  app.get("/api/orders/web", requireAuth, async (req, res) => {
     try {
-      const order = await storage.updateOrderStatus(req.params.id, "pending");
-      if (!order) {
+      const branchId = (req.query.branchId as string) || req.session?.branchId || undefined;
+      const webOrders = await storage.getWebOrders(branchId);
+      const webOrdersWithItems = await Promise.all(
+        webOrders.map(async (order) => {
+          const items = await storage.getOrderItemsWithProducts(order.id);
+          return { ...order, items };
+        })
+      );
+      res.json(webOrdersWithItems);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch web orders" });
+    }
+  });
+
+  app.patch("/api/orders/:id/accept", requireAuth, async (req, res) => {
+    try {
+      const existing = await storage.getOrder(req.params.id);
+      if (!existing) {
         return res.status(404).json({ error: "Order not found" });
       }
+      if (existing.orderSource !== "web" || existing.status !== "web-pending") {
+        return res.status(400).json({ error: "Only web-pending web orders can be accepted" });
+      }
+      const order = await storage.updateOrderStatus(req.params.id, "pending");
       res.json(order);
     } catch (error) {
       res.status(500).json({ error: "Failed to accept order" });
     }
   });
 
-  app.patch("/api/orders/:id/reject", async (req, res) => {
+  app.patch("/api/orders/:id/reject", requireAuth, async (req, res) => {
     try {
-      const order = await storage.updateOrderStatus(req.params.id, "cancelled");
-      if (!order) {
+      const existing = await storage.getOrder(req.params.id);
+      if (!existing) {
         return res.status(404).json({ error: "Order not found" });
       }
+      if (existing.orderSource !== "web" || existing.status !== "web-pending") {
+        return res.status(400).json({ error: "Only web-pending web orders can be rejected" });
+      }
+      const order = await storage.updateOrderStatus(req.params.id, "cancelled");
       res.json(order);
     } catch (error) {
       res.status(500).json({ error: "Failed to reject order" });
@@ -1473,7 +1732,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const filter = (req.query.filter as string) || "today";
       const customDate = req.query.date as string | undefined;
-      const { startDate, endDate } = getDateRange(filter, customDate);
+      const startDateParam = req.query.startDate as string | undefined;
+      const endDateParam = req.query.endDate as string | undefined;
+      const { startDate, endDate } = getDateRange(filter, customDate, startDateParam, endDateParam);
       const stats = await storage.getDashboardStats(startDate, endDate);
       res.json(stats);
     } catch (error) {
@@ -1485,7 +1746,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const filter = (req.query.filter as string) || "today";
       const customDate = req.query.date as string | undefined;
-      const { startDate, endDate } = getDateRange(filter, customDate);
+      const startDateParam = req.query.startDate as string | undefined;
+      const endDateParam = req.query.endDate as string | undefined;
+      const { startDate, endDate } = getDateRange(filter, customDate, startDateParam, endDateParam);
       const sales = await storage.getSalesByCategory(startDate, endDate);
       res.json(sales);
     } catch (error) {
@@ -1497,7 +1760,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const filter = (req.query.filter as string) || "today";
       const customDate = req.query.date as string | undefined;
-      const { startDate, endDate } = getDateRange(filter, customDate);
+      const startDateParam = req.query.startDate as string | undefined;
+      const endDateParam = req.query.endDate as string | undefined;
+      const { startDate, endDate } = getDateRange(filter, customDate, startDateParam, endDateParam);
       const sales = await storage.getSalesByPaymentMethod(startDate, endDate);
       res.json(sales);
     } catch (error) {
@@ -1509,7 +1774,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const filter = (req.query.filter as string) || "today";
       const customDate = req.query.date as string | undefined;
-      const { startDate, endDate } = getDateRange(filter, customDate);
+      const startDateParam = req.query.startDate as string | undefined;
+      const endDateParam = req.query.endDate as string | undefined;
+      const { startDate, endDate } = getDateRange(filter, customDate, startDateParam, endDateParam);
       const products = await storage.getPopularProducts(startDate, endDate);
       res.json(products);
     } catch (error) {
@@ -1565,7 +1832,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const filter = (req.query.filter as string) || "today";
       const customDate = req.query.date as string | undefined;
-      const { startDate, endDate } = getDateRange(filter, customDate);
+      const startDateParam = req.query.startDate as string | undefined;
+      const endDateParam = req.query.endDate as string | undefined;
+      const { startDate, endDate } = getDateRange(filter, customDate, startDateParam, endDateParam);
       const orders = await storage.getRecentOrders(startDate, endDate);
       res.json(orders);
     } catch (error) {
@@ -1693,11 +1962,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/expenses", async (req, res) => {
     try {
-      const { branchId } = req.query;
-      const expenses = await storage.getExpenses(branchId as string | undefined);
+      const { branchId, dateFrom: dateFromStr, dateTo: dateToStr, months: monthsParam } = req.query;
+      let dateFrom: Date | undefined;
+      if (dateFromStr && typeof dateFromStr === "string") {
+        const d = new Date(dateFromStr);
+        if (!isNaN(d.getTime())) dateFrom = d;
+      }
+      let dateTo: Date | undefined;
+      if (dateToStr && typeof dateToStr === "string") {
+        const d = new Date(dateToStr);
+        if (!isNaN(d.getTime())) dateTo = d;
+      }
+      let months: string[] | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean);
+      }
+      const expenses = await storage.getExpenses(branchId as string | undefined, dateFrom, dateTo, months);
       res.json(expenses);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch expenses" });
+    }
+  });
+
+  app.get("/api/expenses/export", async (req, res) => {
+    try {
+      const { branchId, dateFrom: dateFromStr, dateTo: dateToStr, months: monthsParam } = req.query;
+      let dateFrom: Date | undefined;
+      if (dateFromStr && typeof dateFromStr === "string") {
+        const d = new Date(dateFromStr);
+        if (!isNaN(d.getTime())) dateFrom = d;
+      }
+      let dateTo: Date | undefined;
+      if (dateToStr && typeof dateToStr === "string") {
+        const d = new Date(dateToStr);
+        if (!isNaN(d.getTime())) dateTo = d;
+      }
+      let months: string[] | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean);
+      }
+      const expenses = await storage.getExpenses(branchId as string | undefined, dateFrom, dateTo, months);
+      res.json({ expenses });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to export expenses" });
+    }
+  });
+
+  app.get("/api/expenses/stats", async (req, res) => {
+    try {
+      const { branchId, dateFrom: dateFromStr, dateTo: dateToStr, months: monthsParam } = req.query;
+      let dateFrom: Date | undefined;
+      if (dateFromStr && typeof dateFromStr === "string") {
+        const d = new Date(dateFromStr);
+        if (!isNaN(d.getTime())) dateFrom = d;
+      }
+      let dateTo: Date | undefined;
+      if (dateToStr && typeof dateToStr === "string") {
+        const d = new Date(dateToStr);
+        if (!isNaN(d.getTime())) dateTo = d;
+      }
+      let months: string[] | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean);
+      }
+      const stats = await storage.getExpenseStats(branchId as string | undefined, dateFrom, dateTo, months);
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching expense stats:", error);
+      res.status(500).json({ error: "Failed to fetch expense stats" });
     }
   });
 
@@ -2500,27 +2832,88 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Specific paths must be defined before /:id to avoid "with-employees" and "summary" being matched as id
+  // Specific paths must be defined before /:id to avoid "with-employees", "summary", "export" being matched as id
   app.get("/api/staff-salaries/with-employees", requireAuth, async (req, res) => {
     try {
-      const { startDate, endDate } = req.query;
-      const salaries = await storage.getStaffSalariesWithEmployees(
-        startDate ? new Date(startDate as string) : undefined,
-        endDate ? new Date(endDate as string) : undefined
-      );
+      const { startDate, endDate, months: monthsParam } = req.query;
+      let startDateVal: Date | undefined;
+      let endDateVal: Date | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        const months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean).sort();
+        if (months.length > 0) {
+          const first = months[0].split("-").map(Number);
+          const last = months[months.length - 1].split("-").map(Number);
+          startDateVal = new Date(first[0], first[1] - 1, 1);
+          endDateVal = new Date(last[0], last[1], 0, 23, 59, 59, 999);
+        }
+      }
+      if (!startDateVal && startDate && typeof startDate === "string") {
+        const d = new Date(startDate);
+        if (!isNaN(d.getTime())) startDateVal = d;
+      }
+      if (!endDateVal && endDate && typeof endDate === "string") {
+        const d = new Date(endDate);
+        if (!isNaN(d.getTime())) endDateVal = d;
+      }
+      const salaries = await storage.getStaffSalariesWithEmployees(startDateVal, endDateVal);
       res.json(salaries);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch staff salaries with employees" });
     }
   });
 
+  app.get("/api/staff-salaries/export", requireAuth, async (req, res) => {
+    try {
+      const { startDate, endDate, months: monthsParam } = req.query;
+      let startDateVal: Date | undefined;
+      let endDateVal: Date | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        const months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean).sort();
+        if (months.length > 0) {
+          const first = months[0].split("-").map(Number);
+          const last = months[months.length - 1].split("-").map(Number);
+          startDateVal = new Date(first[0], first[1] - 1, 1);
+          endDateVal = new Date(last[0], last[1], 0, 23, 59, 59, 999);
+        }
+      }
+      if (!startDateVal && startDate && typeof startDate === "string") {
+        const d = new Date(startDate);
+        if (!isNaN(d.getTime())) startDateVal = d;
+      }
+      if (!endDateVal && endDate && typeof endDate === "string") {
+        const d = new Date(endDate);
+        if (!isNaN(d.getTime())) endDateVal = d;
+      }
+      const salaries = await storage.getStaffSalariesWithEmployees(startDateVal, endDateVal);
+      res.json({ salaries });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to export staff salaries" });
+    }
+  });
+
   app.get("/api/staff-salaries/summary", requireAuth, async (req, res) => {
     try {
-      const { startDate, endDate } = req.query;
-      const summary = await storage.getStaffSalarySummary(
-        startDate ? new Date(startDate as string) : undefined,
-        endDate ? new Date(endDate as string) : undefined
-      );
+      const { startDate, endDate, months: monthsParam } = req.query;
+      let startDateVal: Date | undefined;
+      let endDateVal: Date | undefined;
+      if (monthsParam && typeof monthsParam === "string" && monthsParam.trim()) {
+        const months = monthsParam.split(",").map((m) => m.trim()).filter(Boolean).sort();
+        if (months.length > 0) {
+          const first = months[0].split("-").map(Number);
+          const last = months[months.length - 1].split("-").map(Number);
+          startDateVal = new Date(first[0], first[1] - 1, 1);
+          endDateVal = new Date(last[0], last[1], 0, 23, 59, 59, 999);
+        }
+      }
+      if (!startDateVal && startDate && typeof startDate === "string") {
+        const d = new Date(startDate);
+        if (!isNaN(d.getTime())) startDateVal = d;
+      }
+      if (!endDateVal && endDate && typeof endDate === "string") {
+        const d = new Date(endDate);
+        if (!isNaN(d.getTime())) endDateVal = d;
+      }
+      const summary = await storage.getStaffSalarySummary(startDateVal, endDateVal);
       res.json(summary);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch salary summary" });
@@ -3208,7 +3601,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/due/customers-summary/stats", async (req, res) => {
     try {
       const branchId = req.query.branchId as string | undefined;
-      const stats = await storage.getCustomersDueSummaryStats(branchId);
+      const dateFrom = req.query.dateFrom ? new Date(req.query.dateFrom as string) : undefined;
+      const dateTo = req.query.dateTo ? new Date(req.query.dateTo as string) : undefined;
+      const search = (req.query.search as string)?.trim() || undefined;
+      const statusFilter = (req.query.statusFilter as string) && req.query.statusFilter !== "all" ? req.query.statusFilter as string : undefined;
+      const minNum = req.query.minAmount != null && req.query.minAmount !== "" ? parseFloat(req.query.minAmount as string) : NaN;
+      const maxNum = req.query.maxAmount != null && req.query.maxAmount !== "" ? parseFloat(req.query.maxAmount as string) : NaN;
+      const minAmount = !isNaN(minNum) ? minNum : undefined;
+      const maxAmount = !isNaN(maxNum) ? maxNum : undefined;
+      const stats = await storage.getCustomersDueSummaryStats(branchId, dateFrom, dateTo, search, statusFilter, minAmount, maxAmount);
       res.json(stats);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch customers summary stats" });
@@ -3416,6 +3817,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   const httpServer = createServer(app);
+  webSocketServer = createWebSocketServer(httpServer);
 
   return httpServer;
 }

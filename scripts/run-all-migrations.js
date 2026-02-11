@@ -661,6 +661,18 @@ async function applyDuePaymentSlipsMigration(client) {
   }
 }
 
+async function applyOrderCustomerContactTypeMigration(client) {
+  console.log('\n📦 Applying order customer_contact_type migration...');
+  try {
+    await client.query(`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "customer_contact_type" text;`);
+    console.log('✅ Add column customer_contact_type to orders');
+  } catch (error) {
+    if (error.code === '42701' || error.message?.includes('already exists')) {
+      logSkip('⚠️  Column customer_contact_type already exists, skipping');
+    } else throw error;
+  }
+}
+
 async function applyPositionsDepartmentsMigration(client) {
   console.log('\n📦 Applying positions and departments migration...');
   const migrationPath = join(__dirname, '..', 'migrations', '0011_add_positions_departments.sql');
@@ -1399,6 +1411,11 @@ async function runAllMigrations() {
     // 16d. Apply due payment slips migration
     await client.query('BEGIN');
     await applyDuePaymentSlipsMigration(client);
+    await client.query('COMMIT');
+
+    // 16e. Apply order customer_contact_type (web orders)
+    await client.query('BEGIN');
+    await applyOrderCustomerContactTypeMigration(client);
     await client.query('COMMIT');
 
     // 17. Create admin user (run in separate transaction)

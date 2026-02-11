@@ -46,6 +46,55 @@ interface RecentOrder {
   diningOption: string;
 }
 
+// Compute start/end of period in local time so "today" matches user's timezone (fixes dashboard showing 0 when sales are after midnight local)
+function getLocalDateRange(filter: string, customDate: Date | undefined): { startDate: Date; endDate: Date } {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+  switch (filter) {
+    case "today":
+      return { startDate: today, endDate: endOfToday };
+    case "yesterday": {
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      return {
+        startDate: yesterday,
+        endDate: new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999),
+      };
+    }
+    case "this-week": {
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - today.getDay());
+      return { startDate: startOfWeek, endDate: endOfToday };
+    }
+    case "this-month": {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { startDate: startOfMonth, endDate: endOfToday };
+    }
+    case "last-month": {
+      const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      return { startDate: startOfLastMonth, endDate: endOfLastMonth };
+    }
+    case "custom":
+      if (customDate) {
+        const d = new Date(customDate.getFullYear(), customDate.getMonth(), customDate.getDate());
+        return {
+          startDate: d,
+          endDate: new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999),
+        };
+      }
+      return { startDate: today, endDate: endOfToday };
+    case "all":
+      return {
+        startDate: new Date(2000, 0, 1),
+        endDate: new Date(2099, 11, 31, 23, 59, 59, 999),
+      };
+    default:
+      return { startDate: today, endDate: endOfToday };
+  }
+}
+
 export default function Dashboard() {
   const [dateFilter, setDateFilter] = useState<string>("today");
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
@@ -56,6 +105,9 @@ export default function Dashboard() {
     if (dateFilter === "custom" && customDate) {
       params.append("date", customDate.toISOString());
     }
+    const { startDate, endDate } = getLocalDateRange(dateFilter, customDate);
+    params.append("startDate", startDate.toISOString());
+    params.append("endDate", endDate.toISOString());
     return params.toString();
   };
 

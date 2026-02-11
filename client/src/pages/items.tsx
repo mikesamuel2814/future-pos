@@ -22,6 +22,7 @@ import JsBarcode from "jsbarcode";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useDebounce } from "@/hooks/use-debounce";
+import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -104,6 +105,8 @@ export default function ItemManage() {
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [dateFilter, setDateFilter] = useState<string>("all");
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [imagePreview, setImagePreview] = useState<string>("");
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [qrCodeDialogOpen, setQrCodeDialogOpen] = useState(false);
@@ -131,7 +134,50 @@ export default function ItemManage() {
   const observerTarget = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Use infinite query for products with pagination
+  const getItemsDateRange = useCallback((): { dateFrom?: Date; dateTo?: Date } => {
+    if (selectedMonths.length > 0) {
+      const sorted = [...selectedMonths].sort();
+      const [y1, m1] = sorted[0].split("-").map(Number);
+      const [y2, m2] = sorted[sorted.length - 1].split("-").map(Number);
+      return {
+        dateFrom: new Date(y1, m1 - 1, 1),
+        dateTo: new Date(y2, m2, 0, 23, 59, 59, 999),
+      };
+    }
+    const now = new Date();
+    const y = now.getFullYear();
+    if (dateFilter === "today") {
+      const t = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      return { dateFrom: t, dateTo: new Date(t.getFullYear(), t.getMonth(), t.getDate(), 23, 59, 59, 999) };
+    }
+    if (dateFilter === "yesterday") {
+      const t = new Date(now); t.setDate(t.getDate() - 1);
+      return { dateFrom: t, dateTo: new Date(t.getFullYear(), t.getMonth(), t.getDate(), 23, 59, 59, 999) };
+    }
+    if (dateFilter === "thisMonth") return { dateFrom: new Date(y, now.getMonth(), 1), dateTo: new Date(y, now.getMonth() + 1, 0, 23, 59, 59, 999) };
+    if (dateFilter === "lastMonth") return { dateFrom: new Date(y, now.getMonth() - 1, 1), dateTo: new Date(y, now.getMonth(), 0, 23, 59, 59, 999) };
+    if (dateFilter === "custom" && customDate) {
+      const d = new Date(customDate.getFullYear(), customDate.getMonth(), customDate.getDate());
+      return { dateFrom: d, dateTo: new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999) };
+    }
+    if (["january","february","march","april","may","june","july","august","september","october","november","december"].includes(dateFilter)) {
+      const m = ["january","february","march","april","may","june","july","august","september","october","november","december"].indexOf(dateFilter);
+      return { dateFrom: new Date(y, m, 1), dateTo: new Date(y, m + 1, 0, 23, 59, 59, 999) };
+    }
+    return {};
+  }, [dateFilter, customDate, selectedMonths]);
+
+  const itemsListParamsString = useMemo(() => {
+    const params = new URLSearchParams();
+    if (debouncedSearchQuery) params.append("search", debouncedSearchQuery);
+    if (selectedCategoryIds.length === 1) params.append("categoryId", selectedCategoryIds[0]);
+    const dateRange = getItemsDateRange();
+    if (dateRange.dateFrom) params.append("dateFrom", dateRange.dateFrom.toISOString());
+    if (dateRange.dateTo) params.append("dateTo", dateRange.dateTo.toISOString());
+    return params.toString();
+  }, [debouncedSearchQuery, selectedCategoryIds, getItemsDateRange]);
+
+  // Use infinite query for products with pagination (key includes params so month/date filter triggers refetch)
   const {
     data: productsData,
     fetchNextPage,
@@ -139,15 +185,11 @@ export default function ItemManage() {
     isFetchingNextPage,
     isLoading: productsLoading,
   } = useInfiniteQuery<{ products: Product[]; total: number }>({
-    queryKey: ["/api/products", { search: debouncedSearchQuery, categoryIds: selectedCategoryIds, dateFilter }],
+    queryKey: ["/api/products", itemsListParamsString],
     queryFn: async ({ pageParam = 0 }) => {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams(itemsListParamsString);
       params.append("limit", "50");
       params.append("offset", String(pageParam));
-      if (debouncedSearchQuery) params.append("search", debouncedSearchQuery);
-      // API accepts single categoryId; when exactly one category selected, pass it for server-side filter
-      if (selectedCategoryIds.length === 1) params.append("categoryId", selectedCategoryIds[0]);
-      
       const res = await fetch(`/api/products?${params.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch products");
       const data = await res.json();
@@ -274,6 +316,11 @@ export default function ItemManage() {
       selectedDate.setHours(0, 0, 0, 0);
       productDate.setHours(0, 0, 0, 0);
       matchesDate = productDate.getTime() === selectedDate.getTime();
+    } else if (selectedMonths.length > 0) {
+      matchesDate = selectedMonths.some((m) => {
+        const [y, mo] = m.split("-").map(Number);
+        return productDate.getFullYear() === y && productDate.getMonth() + 1 === mo;
+      });
     }
 
     return matchesSearch && matchesCategory && matchesDate;
@@ -592,10 +639,8 @@ export default function ItemManage() {
     setItemDialogOpen(true);
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const processImageFile = (file: File | undefined) => {
     if (!file) return;
-
     if (!file.type.startsWith('image/')) {
       toast({
         title: "Invalid file",
@@ -604,7 +649,6 @@ export default function ItemManage() {
       });
       return;
     }
-
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64String = reader.result as string;
@@ -612,6 +656,29 @@ export default function ItemManage() {
       itemForm.setValue('imageUrl', base64String);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    processImageFile(e.target.files?.[0]);
+    e.target.value = "";
+  };
+
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
+  const handleImageDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingImage(false);
+    const file = e.dataTransfer.files?.[0];
+    processImageFile(file);
+  };
+  const handleImageDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingImage(true);
+  };
+  const handleImageDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingImage(false);
   };
 
   const handleRemoveImage = () => {
@@ -677,41 +744,55 @@ export default function ItemManage() {
     }
   };
 
-  const handleExport = () => {
-    const csvHeaders = "Name,Category,Purchase Cost,Sales Price,Unit,Quantity,Description,Enable Size Pricing,Sizes,Sale S,Sale M,Sale L,Purchase S,Purchase M,Purchase L,Created At\n";
-    const csvRows = filteredProducts.map(product => {
-      const category = categories.find(c => c.id === product.categoryId)?.name || "";
-      const sizePrices = product.sizePrices as Record<string, string> | null | undefined;
-      const sizePurchasePrices = product.sizePurchasePrices as Record<string, string> | null | undefined;
-      const hasSizePrices = sizePrices && Object.keys(sizePrices).length > 0;
-      const sizesStr = hasSizePrices ? Object.keys(sizePrices).join(",") : "";
-      const saleS = hasSizePrices ? (sizePrices!.S ?? "") : "";
-      const saleM = hasSizePrices ? (sizePrices!.M ?? "") : "";
-      const saleL = hasSizePrices ? (sizePrices!.L ?? "") : "";
-      const purchaseS = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.S ?? "") : "";
-      const purchaseM = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.M ?? "") : "";
-      const purchaseL = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.L ?? "") : "";
-      const enableSizePricing = hasSizePrices ? "Y" : "";
-      const purchaseCost = hasSizePrices ? "" : (product.purchaseCost || "");
-      const price = hasSizePrices ? "" : product.price;
-      return `"${product.name}","${category}","${purchaseCost}","${price}","${product.unit}","${product.quantity}","${product.description || ""}","${enableSizePricing}","${sizesStr}","${saleS}","${saleM}","${saleL}","${purchaseS}","${purchaseM}","${purchaseL}","${format(new Date(product.createdAt), "yyyy-MM-dd")}"`;
-    }).join("\n");
-    
-    const csv = csvHeaders + csvRows;
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `items-${format(new Date(), "yyyy-MM-dd")}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
-    
-    toast({
-      title: "Success",
-      description: "Items exported successfully",
-    });
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      params.append("limit", "50000");
+      params.append("offset", "0");
+      if (debouncedSearchQuery) params.append("search", debouncedSearchQuery);
+      if (selectedCategoryIds.length === 1) params.append("categoryId", selectedCategoryIds[0]);
+      const dateRange = getItemsDateRange();
+      if (dateRange.dateFrom) params.append("dateFrom", dateRange.dateFrom.toISOString());
+      if (dateRange.dateTo) params.append("dateTo", dateRange.dateTo.toISOString());
+      const res = await fetch(`/api/products?${params}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch products");
+      const data = await res.json();
+      const productsToExport = Array.isArray(data) ? data : (data.products || []);
+      const csvHeaders = "Name,Category,Purchase Cost,Sales Price,Unit,Quantity,Description,Enable Size Pricing,Sizes,Sale S,Sale M,Sale L,Purchase S,Purchase M,Purchase L,Created At\n";
+      const csvRows = productsToExport.map((product: Product) => {
+        const category = categories.find(c => c.id === product.categoryId)?.name || "";
+        const sizePrices = product.sizePrices as Record<string, string> | null | undefined;
+        const sizePurchasePrices = product.sizePurchasePrices as Record<string, string> | null | undefined;
+        const hasSizePrices = sizePrices && Object.keys(sizePrices).length > 0;
+        const sizesStr = hasSizePrices ? Object.keys(sizePrices).join(",") : "";
+        const saleS = hasSizePrices ? (sizePrices!.S ?? "") : "";
+        const saleM = hasSizePrices ? (sizePrices!.M ?? "") : "";
+        const saleL = hasSizePrices ? (sizePrices!.L ?? "") : "";
+        const purchaseS = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.S ?? "") : "";
+        const purchaseM = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.M ?? "") : "";
+        const purchaseL = hasSizePrices && sizePurchasePrices ? (sizePurchasePrices.L ?? "") : "";
+        const enableSizePricing = hasSizePrices ? "Y" : "";
+        const purchaseCost = hasSizePrices ? "" : (product.purchaseCost || "");
+        const price = hasSizePrices ? "" : product.price;
+        return `"${product.name}","${category}","${purchaseCost}","${price}","${product.unit}","${product.quantity}","${product.description || ""}","${enableSizePricing}","${sizesStr}","${saleS}","${saleM}","${saleL}","${purchaseS}","${purchaseM}","${purchaseL}","${format(new Date(product.createdAt), "yyyy-MM-dd")}"`;
+      }).join("\n");
+      const csv = csvHeaders + csvRows;
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `items-${format(new Date(), "yyyy-MM-dd")}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      toast({ title: "Success", description: `Exported ${productsToExport.length} items` });
+    } catch (e) {
+      toast({ title: "Export Failed", description: e instanceof Error ? e.message : "Failed to export", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1150,9 +1231,9 @@ export default function ItemManage() {
             </Button>
 
             {hasPermission("reports.export") && (
-              <Button variant="outline" onClick={handleExport} data-testid="button-export">
+              <Button variant="outline" onClick={handleExport} disabled={exporting} data-testid="button-export">
                 <Download className="w-4 h-4 mr-2" />
-                Export Items
+                {exporting ? "Exporting…" : "Export Items"}
               </Button>
             )}
 
@@ -1227,11 +1308,20 @@ export default function ItemManage() {
                               onChange={handleImageUpload}
                               data-testid="input-image-upload"
                             />
-                            <div className="border-2 border-dashed rounded-md p-6 hover-elevate cursor-pointer transition-colors flex flex-col items-center gap-2">
+                            <div
+                              className={cn(
+                                "border-2 border-dashed rounded-md p-6 cursor-pointer transition-colors flex flex-col items-center gap-2",
+                                isDraggingImage ? "border-primary bg-primary/5" : "hover:border-primary/50 hover:bg-muted/50"
+                              )}
+                              onDragOver={handleImageDragOver}
+                              onDragLeave={handleImageDragLeave}
+                              onDrop={handleImageDrop}
+                              onClick={() => document.getElementById('item-image-upload')?.click()}
+                            >
                               <ImagePlus className="w-8 h-8 text-muted-foreground" />
                               <div className="text-center">
                                 <p className="text-sm font-medium">Upload Image</p>
-                                <p className="text-xs text-muted-foreground">Click to select an image file</p>
+                                <p className="text-xs text-muted-foreground">Drag and drop or click to select an image file</p>
                               </div>
                             </div>
                           </label>
@@ -1664,6 +1754,28 @@ export default function ItemManage() {
                     </PopoverContent>
                   </Popover>
                 )}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="min-w-[140px] justify-start">
+                      {selectedMonths.length === 0 ? "All months" : selectedMonths.length <= 2 ? selectedMonths.map((m) => { const [y, mo] = m.split("-").map(Number); return format(new Date(y, mo - 1, 1), "MMM yyyy"); }).join(", ") : `${selectedMonths.length} months`}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[280px] p-0" align="start">
+                    <div className="max-h-[300px] overflow-y-auto p-2">
+                      {Array.from({ length: 24 }, (_, i) => {
+                        const d = new Date(); d.setMonth(d.getMonth() - (23 - i));
+                        const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+                        const checked = selectedMonths.includes(value);
+                        return (
+                          <div key={value} className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted cursor-pointer" onClick={() => setSelectedMonths((prev) => (checked ? prev.filter((x) => x !== value) : [...prev, value].sort()))}>
+                            <Checkbox checked={checked} onCheckedChange={() => {}} />
+                            <span className="text-sm">{format(d, "MMMM yyyy")}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
             </div>
           </CardContent>

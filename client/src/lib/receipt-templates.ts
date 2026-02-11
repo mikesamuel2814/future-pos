@@ -27,6 +27,14 @@ export function generateReceiptHTML(
 ): string {
   const { sale, items, settings, totalKHR, paymentDetails } = data;
 
+  // Ensure invoice ID is never undefined/null on printed receipt
+  const safeOrderNumber =
+    sale?.orderNumber != null && String(sale.orderNumber).trim() !== ""
+      ? String(sale.orderNumber)
+      : "—";
+  const saleForTemplate = { ...sale, orderNumber: safeOrderNumber };
+  const dataWithSafeSale = { ...data, sale: saleForTemplate };
+
   const receiptHeader = settings?.receiptHeader || "";
   const receiptFooter = settings?.receiptFooter || "";
   const showLogo = settings?.showLogoOnReceipt === "true";
@@ -59,17 +67,17 @@ export function generateReceiptHTML(
 
   switch (template) {
     case "classic":
-      return generateClassicTemplate(data, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
+      return generateClassicTemplate(dataWithSafeSale, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
     case "modern":
-      return generateModernTemplate(data, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
+      return generateModernTemplate(dataWithSafeSale, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
     case "compact":
-      return generateCompactTemplate(data, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
+      return generateCompactTemplate(dataWithSafeSale, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
     case "detailed":
-      return generateDetailedTemplate(data, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
+      return generateDetailedTemplate(dataWithSafeSale, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
     case "elegant":
-      return generateElegantTemplate(data, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
+      return generateElegantTemplate(dataWithSafeSale, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
     default:
-      return generateClassicTemplate(data, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
+      return generateClassicTemplate(dataWithSafeSale, companyDetailsHtml, headerHtml, footerHtml, invoicePrefix);
   }
 }
 

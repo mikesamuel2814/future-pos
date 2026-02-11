@@ -14,21 +14,33 @@ import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { Plus, Eye, Edit, Trash2, Printer, Search, FolderOpen, Upload, X, Wallet, TrendingUp, Calendar as CalendarIcon, Package } from "lucide-react";
+import { Plus, Eye, Edit, Trash2, Printer, Search, FolderOpen, Upload, X, Wallet, TrendingUp, Calendar as CalendarIcon, Package, Download } from "lucide-react";
 import { format } from "date-fns";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { UnitSelect } from "@/components/unit-select";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import * as XLSX from "xlsx";
+import { useBranch } from "@/contexts/BranchContext";
 import type { Expense, ExpenseCategory, Unit } from "@shared/schema";
 
 export default function ExpenseManage() {
   const { toast } = useToast();
   const { hasPermission } = usePermissions();
+  const { selectedBranchId } = useBranch();
   const [searchTerm, setSearchTerm] = useState("");
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
   const [dateFilter, setDateFilter] = useState<string>("all");
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [activeTab, setActiveTab] = useState("expenses");
   
   const [viewExpense, setViewExpense] = useState<Expense | null>(null);
@@ -66,8 +78,38 @@ export default function ExpenseManage() {
     description: "",
   });
 
+  // When months selected, use exact date-time range in local time (fixes timezone: Jan export not including Feb 1st)
+  const getExpensesQueryParams = () => {
+    const params = new URLSearchParams();
+    if (selectedBranchId) params.append("branchId", selectedBranchId);
+    if (selectedMonths.length > 0) {
+      const sorted = [...selectedMonths].sort();
+      const [y1, m1] = sorted[0].split("-").map(Number);
+      const [y2, m2] = sorted[sorted.length - 1].split("-").map(Number);
+      params.append("dateFrom", new Date(y1, m1 - 1, 1, 0, 0, 0, 0).toISOString());
+      params.append("dateTo", new Date(y2, m2, 0, 23, 59, 59, 999).toISOString());
+    }
+    return params.toString();
+  };
+
+  const expensesParamsString = getExpensesQueryParams();
+
   const { data: expenses = [], isLoading: expensesLoading } = useQuery<Expense[]>({
-    queryKey: ["/api/expenses"],
+    queryKey: ["/api/expenses", expensesParamsString],
+    queryFn: async () => {
+      const res = await fetch(`/api/expenses${expensesParamsString ? `?${expensesParamsString}` : ""}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch expenses");
+      return res.json();
+    },
+  });
+
+  const { data: expenseStats } = useQuery<{ totalAmount: number; count: number; avgExpense: number }>({
+    queryKey: ["/api/expenses/stats", expensesParamsString],
+    queryFn: async () => {
+      const res = await fetch(`/api/expenses/stats${expensesParamsString ? `?${expensesParamsString}` : ""}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch expense stats");
+      return res.json();
+    },
   });
 
   const { data: categories = [], isLoading: categoriesLoading } = useQuery<ExpenseCategory[]>({
@@ -413,6 +455,38 @@ export default function ExpenseManage() {
     });
   };
 
+  const handleExportExpenses = async () => {
+    setExporting(true);
+    try {
+      const q = getExpensesQueryParams();
+      const res = await fetch(`/api/expenses/export${q ? `?${q}` : ""}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to export");
+      const { expenses: exportList } = await res.json();
+      const exportData = (exportList || []).map((e: Expense) => {
+        const cat = categories.find((c) => c.id === e.categoryId);
+        return {
+          "Expense ID": e.id,
+          "Date": format(new Date(e.expenseDate), "yyyy-MM-dd HH:mm"),
+          "Category": cat?.name ?? "",
+          "Description": e.description,
+          "Amount": e.amount,
+          "Unit": e.unit,
+          "Quantity": e.quantity,
+          "Total": e.total,
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Expenses");
+      XLSX.writeFile(wb, `expenses-${format(new Date(), "yyyy-MM-dd")}.xlsx`);
+      toast({ title: "Success", description: `Exported ${exportData.length} expenses` });
+    } catch (e) {
+      toast({ title: "Export Failed", description: e instanceof Error ? e.message : "Failed to export", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const filteredExpenses = expenses.filter(expense => {
     const category = categories.find(c => c.id === expense.categoryId);
     const searchLower = debouncedSearchTerm.toLowerCase();
@@ -428,6 +502,12 @@ export default function ExpenseManage() {
     
     const expenseDate = new Date(expense.expenseDate);
     let matchesDate = true;
+    if (selectedMonths.length > 0) {
+      matchesDate = selectedMonths.some((m) => {
+        const [y, mo] = m.split("-").map(Number);
+        return expenseDate.getFullYear() === y && expenseDate.getMonth() + 1 === mo;
+      });
+    } else {
     const now = new Date();
     const currentYear = now.getFullYear();
     
@@ -504,13 +584,14 @@ export default function ExpenseManage() {
       expenseDate.setHours(0, 0, 0, 0);
       matchesDate = expenseDate.getTime() === selectedDate.getTime();
     }
+    }
     
     return matchesSearch && matchesCategory && matchesDate;
   });
 
-  const totalExpenses = expenses.reduce((sum, expense) => sum + parseFloat(expense.total), 0);
-  const expenseCount = expenses.length;
-  const avgExpense = expenseCount > 0 ? totalExpenses / expenseCount : 0;
+  const totalExpenses = expenseStats?.totalAmount ?? expenses.reduce((sum, expense) => sum + parseFloat(expense.total), 0);
+  const expenseCount = expenseStats?.count ?? expenses.length;
+  const avgExpense = expenseStats?.avgExpense ?? (expenseCount > 0 ? totalExpenses / expenseCount : 0);
 
   return (
     <div className="h-full overflow-auto">
@@ -520,12 +601,27 @@ export default function ExpenseManage() {
             <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-orange-600 to-pink-600 bg-clip-text text-transparent">Expense Management</h1>
             <p className="text-sm md:text-base text-muted-foreground mt-1 font-medium">Track and manage all business expenses</p>
           </div>
-          {hasPermission("expenses.create") && (
-            <Button onClick={() => setShowAddExpenseDialog(true)} className="bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 w-full sm:w-auto" data-testid="button-add-expense">
-              <Plus className="w-4 h-4 mr-2" />
-              Add Expense
-            </Button>
-          )}
+          <div className="flex gap-2">
+            {hasPermission("reports.export") && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" disabled={exporting} data-testid="button-export-expenses">
+                    <Download className="w-4 h-4 mr-2" />
+                    {exporting ? "Exporting…" : "Export"}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={handleExportExpenses}>Export to Excel</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {hasPermission("expenses.create") && (
+              <Button onClick={() => setShowAddExpenseDialog(true)} className="bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 w-full sm:w-auto" data-testid="button-add-expense">
+                <Plus className="w-4 h-4 mr-2" />
+                Add Expense
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -656,6 +752,43 @@ export default function ExpenseManage() {
                       </PopoverContent>
                     </Popover>
                   )}
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className="w-full sm:w-[180px] justify-start">
+                        {selectedMonths.length === 0
+                          ? "All months"
+                          : selectedMonths.length <= 2
+                            ? selectedMonths.map((m) => {
+                                const [y, mo] = m.split("-").map(Number);
+                                return format(new Date(y, mo - 1, 1), "MMM yyyy");
+                              }).join(", ")
+                            : `${selectedMonths.length} months selected`}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[280px] p-0" align="start">
+                      <div className="max-h-[300px] overflow-y-auto p-2">
+                        {Array.from({ length: 24 }, (_, i) => {
+                          const d = new Date();
+                          d.setMonth(d.getMonth() - (23 - i));
+                          const y = d.getFullYear();
+                          const mo = String(d.getMonth() + 1).padStart(2, "0");
+                          const value = `${y}-${mo}`;
+                          const label = format(d, "MMMM yyyy");
+                          const checked = selectedMonths.includes(value);
+                          return (
+                            <div
+                              key={value}
+                              className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted cursor-pointer"
+                              onClick={() => setSelectedMonths((prev) => (checked ? prev.filter((x) => x !== value) : [...prev, value].sort()))}
+                            >
+                              <Checkbox checked={checked} onCheckedChange={() => {}} />
+                              <span className="text-sm">{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 </div>
 
                 {expensesLoading ? (
