@@ -25,6 +25,16 @@ import {
   type InsertPayroll,
   type StaffSalary,
   type InsertStaffSalary,
+  type StaffDeduction,
+  type InsertStaffDeduction,
+  type StaffAdvance,
+  type InsertStaffAdvance,
+  type StaffPreviousDue,
+  type InsertStaffPreviousDue,
+  type StaffLoan,
+  type InsertStaffLoan,
+  type StaffUnpaidLeave,
+  type InsertStaffUnpaidLeave,
   type Position,
   type InsertPosition,
   type Department,
@@ -72,6 +82,11 @@ import {
   leaves,
   payroll,
   staffSalaries,
+  staffDeductions,
+  staffAdvances,
+  staffPreviousDue,
+  staffLoans,
+  staffUnpaidLeave,
   positions,
   departments,
   settings,
@@ -173,8 +188,8 @@ export interface IStorage {
   updateUnit(id: string, unit: Partial<InsertUnit>): Promise<Unit | undefined>;
   deleteUnit(id: string): Promise<boolean>;
   
-  getExpenses(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<Expense[]>;
-  getExpenseStats(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<{ totalAmount: number; count: number; avgExpense: number }>;
+  getExpenses(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[], categoryId?: string | null): Promise<Expense[]>;
+  getExpenseStats(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[], categoryId?: string | null): Promise<{ totalAmount: number; count: number; avgExpense: number; categoryCount: number }>;
   getExpense(id: string): Promise<Expense | undefined>;
   createExpense(expense: InsertExpense): Promise<Expense>;
   updateExpense(id: string, expense: Partial<InsertExpense>): Promise<Expense | undefined>;
@@ -188,6 +203,7 @@ export interface IStorage {
   
   getEmployees(branchId?: string | null): Promise<Employee[]>;
   getEmployeesPaginated(opts: { branchId?: string | null; limit: number; offset: number; search?: string; status?: string; joinDateFrom?: Date; joinDateTo?: Date }): Promise<{ employees: Employee[]; total: number }>;
+  getNextEmployeeId(branchId?: string | null): Promise<string>;
   getEmployee(id: string): Promise<Employee | undefined>;
   createEmployee(employee: InsertEmployee): Promise<Employee>;
   updateEmployee(id: string, employee: Partial<InsertEmployee>): Promise<Employee | undefined>;
@@ -226,6 +242,41 @@ export interface IStorage {
   createStaffSalary(salary: InsertStaffSalary): Promise<StaffSalary>;
   updateStaffSalary(id: string, salary: Partial<InsertStaffSalary>): Promise<StaffSalary | undefined>;
   deleteStaffSalary(id: string): Promise<boolean>;
+
+  getEmployeesPayableSummary(branchId?: string | null): Promise<{ totalPayable: number; totalDeduction: number }>;
+  getDeductionsByEmployee(employeeId: string, status?: "pending" | "applied"): Promise<StaffDeduction[]>;
+  getStaffDeduction(id: string): Promise<StaffDeduction | undefined>;
+  createStaffDeduction(data: InsertStaffDeduction): Promise<StaffDeduction>;
+  updateStaffDeduction(id: string, data: Partial<Pick<StaffDeduction, "amount" | "reason">>): Promise<StaffDeduction | undefined>;
+  deleteStaffDeduction(id: string): Promise<boolean>;
+  getAdvancesByEmployee(employeeId: string, status?: "pending" | "deducted"): Promise<StaffAdvance[]>;
+  getStaffAdvance(id: string): Promise<StaffAdvance | undefined>;
+  createStaffAdvance(data: InsertStaffAdvance): Promise<StaffAdvance>;
+  updateStaffAdvance(id: string, data: Partial<Pick<StaffAdvance, "amount" | "note">>): Promise<StaffAdvance | undefined>;
+  deleteStaffAdvance(id: string): Promise<boolean>;
+  getPendingDeductionsTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>>;
+  getPendingAdvancesTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>>;
+  getPendingPreviousDueTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>>;
+  getLastCarriedByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>>;
+  getPreviousDueByEmployee(employeeId: string, status?: "pending" | "settled"): Promise<StaffPreviousDue[]>;
+  getStaffPreviousDue(id: string): Promise<StaffPreviousDue | undefined>;
+  createStaffPreviousDue(data: InsertStaffPreviousDue): Promise<StaffPreviousDue>;
+  updateStaffPreviousDue(id: string, data: Partial<Pick<StaffPreviousDue, "amount" | "note">>): Promise<StaffPreviousDue | undefined>;
+  deleteStaffPreviousDue(id: string): Promise<boolean>;
+
+  getPendingLoanTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>>;
+  getLoansByEmployee(employeeId: string, status?: "pending" | "settled"): Promise<StaffLoan[]>;
+  getStaffLoan(id: string): Promise<StaffLoan | undefined>;
+  createStaffLoan(data: InsertStaffLoan): Promise<StaffLoan>;
+  updateStaffLoan(id: string, data: Partial<Pick<StaffLoan, "amount" | "note">>): Promise<StaffLoan | undefined>;
+  deleteStaffLoan(id: string): Promise<boolean>;
+
+  getPendingUnpaidLeaveTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>>;
+  getUnpaidLeaveByEmployee(employeeId: string, status?: "pending" | "applied"): Promise<StaffUnpaidLeave[]>;
+  getStaffUnpaidLeave(id: string): Promise<StaffUnpaidLeave | undefined>;
+  createStaffUnpaidLeave(data: InsertStaffUnpaidLeave): Promise<StaffUnpaidLeave>;
+  updateStaffUnpaidLeave(id: string, data: Partial<Pick<StaffUnpaidLeave, "amount" | "note">>): Promise<StaffUnpaidLeave | undefined>;
+  deleteStaffUnpaidLeave(id: string): Promise<boolean>;
 
   getPositions(): Promise<Position[]>;
   getPosition(id: string): Promise<Position | undefined>;
@@ -1826,10 +1877,13 @@ export class DatabaseStorage implements IStorage {
     return result.rowCount !== null && result.rowCount > 0;
   }
 
-  async getExpenses(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<Expense[]> {
+  async getExpenses(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[], categoryId?: string | null): Promise<Expense[]> {
     const conditions: any[] = [];
     if (branchId) {
       conditions.push(eq(expenses.branchId, branchId));
+    }
+    if (categoryId) {
+      conditions.push(eq(expenses.categoryId, categoryId));
     }
     if (dateFrom) {
       conditions.push(gte(expenses.expenseDate, dateFrom));
@@ -1851,9 +1905,10 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(expenses).where(whereClause);
   }
 
-  async getExpenseStats(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[]): Promise<{ totalAmount: number; count: number; avgExpense: number }> {
+  async getExpenseStats(branchId?: string | null, dateFrom?: Date, dateTo?: Date, months?: string[], categoryId?: string | null): Promise<{ totalAmount: number; count: number; avgExpense: number; categoryCount: number }> {
     const conditions: any[] = [];
     if (branchId) conditions.push(eq(expenses.branchId, branchId));
+    if (categoryId) conditions.push(eq(expenses.categoryId, categoryId));
     if (dateFrom) conditions.push(gte(expenses.expenseDate, dateFrom));
     if (dateTo) conditions.push(lte(expenses.expenseDate, dateTo));
     if (months && months.length > 0 && !(dateFrom && dateTo)) {
@@ -1870,13 +1925,15 @@ export class DatabaseStorage implements IStorage {
     let query = db.select({
       totalAmount: sql<string>`COALESCE(SUM(CAST(${expenses.total} AS DECIMAL)), 0)`,
       count: sql<number>`count(*)`,
+      categoryCount: sql<number>`COUNT(DISTINCT ${expenses.categoryId})`,
     }).from(expenses);
     if (whereClause) query = query.where(whereClause) as any;
     const rows = await query;
     const totalAmount = parseFloat(rows[0]?.totalAmount || "0");
     const count = Number(rows[0]?.count || 0);
+    const categoryCount = Number(rows[0]?.categoryCount || 0);
     const avgExpense = count > 0 ? totalAmount / count : 0;
-    return { totalAmount, count, avgExpense };
+    return { totalAmount, count, avgExpense, categoryCount };
   }
 
   async getExpense(id: string): Promise<Expense | undefined> {
@@ -2150,6 +2207,16 @@ export class DatabaseStorage implements IStorage {
     return { employees: list, total };
   }
 
+  async getNextEmployeeId(branchId?: string | null): Promise<string> {
+    const list = await this.getEmployees(branchId);
+    let maxNum = 0;
+    for (const e of list) {
+      const match = /^E(\d+)$/i.exec(e.employeeId?.trim() ?? "");
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    return `E${String(maxNum + 1).padStart(3, "0")}`;
+  }
+
   async getEmployee(id: string): Promise<Employee | undefined> {
     const result = await db.select().from(employees).where(eq(employees.id, id));
     return result[0];
@@ -2414,6 +2481,254 @@ export class DatabaseStorage implements IStorage {
   async deleteStaffSalary(id: string): Promise<boolean> {
     const result = await db.delete(staffSalaries).where(eq(staffSalaries.id, id));
     return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async getEmployeesPayableSummary(branchId?: string | null): Promise<{ totalPayable: number; totalDeduction: number }> {
+    const list = await this.getEmployees(branchId);
+    const ids = list.map((e) => e.id);
+    if (ids.length === 0) return { totalPayable: 0, totalDeduction: 0 };
+    const [pendingDed, pendingAdv, lastCarried, pendingPrevDue, pendingLoan, pendingUL] = await Promise.all([
+      this.getPendingDeductionsTotalsByEmployeeIds(ids),
+      this.getPendingAdvancesTotalsByEmployeeIds(ids),
+      this.getLastCarriedByEmployeeIds(ids),
+      this.getPendingPreviousDueTotalsByEmployeeIds(ids),
+      this.getPendingLoanTotalsByEmployeeIds(ids),
+      this.getPendingUnpaidLeaveTotalsByEmployeeIds(ids),
+    ]);
+    let totalPayable = 0;
+    let totalDeduction = 0;
+    for (const e of list) {
+      const base = parseFloat(e.salary);
+      const ded = pendingDed[e.id] ?? 0;
+      totalDeduction += ded;
+      totalPayable += base + (lastCarried[e.id] ?? 0) + (pendingPrevDue[e.id] ?? 0) - ded - (pendingAdv[e.id] ?? 0) - (pendingLoan[e.id] ?? 0) - (pendingUL[e.id] ?? 0);
+    }
+    return { totalPayable, totalDeduction };
+  }
+
+  async getDeductionsByEmployee(employeeId: string, status?: "pending" | "applied"): Promise<StaffDeduction[]> {
+    const conditions = [eq(staffDeductions.employeeId, employeeId)];
+    if (status) conditions.push(eq(staffDeductions.status, status));
+    return await db.select().from(staffDeductions).where(and(...conditions)).orderBy(desc(staffDeductions.createdAt));
+  }
+
+  async createStaffDeduction(data: InsertStaffDeduction): Promise<StaffDeduction> {
+    const result = await db.insert(staffDeductions).values(data).returning();
+    return result[0];
+  }
+
+  async updateStaffDeduction(id: string, data: Partial<Pick<StaffDeduction, "amount" | "reason">>): Promise<StaffDeduction | undefined> {
+    const updates: Record<string, unknown> = {};
+    if (data.amount !== undefined) updates.amount = String(data.amount);
+    if (data.reason !== undefined) updates.reason = data.reason;
+    if (Object.keys(updates).length === 0) return this.getStaffDeduction(id);
+    const result = await db.update(staffDeductions).set(updates).where(eq(staffDeductions.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteStaffDeduction(id: string): Promise<boolean> {
+    const result = await db.delete(staffDeductions).where(eq(staffDeductions.id, id));
+    return result.rowCount != null && result.rowCount > 0;
+  }
+
+  async getStaffDeduction(id: string): Promise<StaffDeduction | undefined> {
+    const rows = await db.select().from(staffDeductions).where(eq(staffDeductions.id, id));
+    return rows[0];
+  }
+
+  async getAdvancesByEmployee(employeeId: string, status?: "pending" | "deducted"): Promise<StaffAdvance[]> {
+    const conditions = [eq(staffAdvances.employeeId, employeeId)];
+    if (status) conditions.push(eq(staffAdvances.status, status));
+    return await db.select().from(staffAdvances).where(and(...conditions)).orderBy(desc(staffAdvances.createdAt));
+  }
+
+  async createStaffAdvance(data: InsertStaffAdvance): Promise<StaffAdvance> {
+    const result = await db.insert(staffAdvances).values(data).returning();
+    return result[0];
+  }
+
+  async updateStaffAdvance(id: string, data: Partial<Pick<StaffAdvance, "amount" | "note">>): Promise<StaffAdvance | undefined> {
+    const updates: Record<string, unknown> = {};
+    if (data.amount !== undefined) updates.amount = String(data.amount);
+    if (data.note !== undefined) updates.note = data.note;
+    if (Object.keys(updates).length === 0) return this.getStaffAdvance(id);
+    const result = await db.update(staffAdvances).set(updates).where(eq(staffAdvances.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteStaffAdvance(id: string): Promise<boolean> {
+    const result = await db.delete(staffAdvances).where(eq(staffAdvances.id, id));
+    return result.rowCount != null && result.rowCount > 0;
+  }
+
+  async getStaffAdvance(id: string): Promise<StaffAdvance | undefined> {
+    const rows = await db.select().from(staffAdvances).where(eq(staffAdvances.id, id));
+    return rows[0];
+  }
+
+  async getPendingDeductionsTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>> {
+    if (employeeIds.length === 0) return {};
+    const rows = await db.select({
+      employeeId: staffDeductions.employeeId,
+      total: sql<string>`COALESCE(SUM(${staffDeductions.amount}::numeric), 0)`,
+    }).from(staffDeductions).where(and(eq(staffDeductions.status, "pending"), inArray(staffDeductions.employeeId, employeeIds))).groupBy(staffDeductions.employeeId);
+    const out: Record<string, number> = {};
+    for (const id of employeeIds) out[id] = 0;
+    for (const r of rows) out[r.employeeId] = parseFloat(r.total);
+    return out;
+  }
+
+  async getPendingAdvancesTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>> {
+    if (employeeIds.length === 0) return {};
+    const rows = await db.select({
+      employeeId: staffAdvances.employeeId,
+      total: sql<string>`COALESCE(SUM(${staffAdvances.amount}::numeric), 0)`,
+    }).from(staffAdvances).where(and(eq(staffAdvances.status, "pending"), inArray(staffAdvances.employeeId, employeeIds))).groupBy(staffAdvances.employeeId);
+    const out: Record<string, number> = {};
+    for (const id of employeeIds) out[id] = 0;
+    for (const r of rows) out[r.employeeId] = parseFloat(r.total);
+    return out;
+  }
+
+  async getPendingPreviousDueTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>> {
+    if (employeeIds.length === 0) return {};
+    const rows = await db.select({
+      employeeId: staffPreviousDue.employeeId,
+      total: sql<string>`COALESCE(SUM(${staffPreviousDue.amount}::numeric), 0)`,
+    }).from(staffPreviousDue).where(and(eq(staffPreviousDue.status, "pending"), inArray(staffPreviousDue.employeeId, employeeIds))).groupBy(staffPreviousDue.employeeId);
+    const out: Record<string, number> = {};
+    for (const id of employeeIds) out[id] = 0;
+    for (const r of rows) out[r.employeeId] = parseFloat(r.total);
+    return out;
+  }
+
+  async getPreviousDueByEmployee(employeeId: string, status?: "pending" | "settled"): Promise<StaffPreviousDue[]> {
+    const conditions = [eq(staffPreviousDue.employeeId, employeeId)];
+    if (status) conditions.push(eq(staffPreviousDue.status, status));
+    return await db.select().from(staffPreviousDue).where(and(...conditions)).orderBy(desc(staffPreviousDue.createdAt));
+  }
+
+  async createStaffPreviousDue(data: InsertStaffPreviousDue): Promise<StaffPreviousDue> {
+    const result = await db.insert(staffPreviousDue).values(data).returning();
+    return result[0];
+  }
+
+  async updateStaffPreviousDue(id: string, data: Partial<Pick<StaffPreviousDue, "amount" | "note">>): Promise<StaffPreviousDue | undefined> {
+    const updates: Record<string, unknown> = {};
+    if (data.amount !== undefined) updates.amount = String(data.amount);
+    if (data.note !== undefined) updates.note = data.note;
+    if (Object.keys(updates).length === 0) return this.getStaffPreviousDue(id);
+    const result = await db.update(staffPreviousDue).set(updates).where(eq(staffPreviousDue.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteStaffPreviousDue(id: string): Promise<boolean> {
+    const result = await db.delete(staffPreviousDue).where(eq(staffPreviousDue.id, id));
+    return result.rowCount != null && result.rowCount > 0;
+  }
+
+  async getStaffPreviousDue(id: string): Promise<StaffPreviousDue | undefined> {
+    const rows = await db.select().from(staffPreviousDue).where(eq(staffPreviousDue.id, id));
+    return rows[0];
+  }
+
+  async getPendingLoanTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>> {
+    if (employeeIds.length === 0) return {};
+    const rows = await db.select({
+      employeeId: staffLoans.employeeId,
+      total: sql<string>`COALESCE(SUM(${staffLoans.amount}::numeric), 0)`,
+    }).from(staffLoans).where(and(eq(staffLoans.status, "pending"), inArray(staffLoans.employeeId, employeeIds))).groupBy(staffLoans.employeeId);
+    const out: Record<string, number> = {};
+    for (const id of employeeIds) out[id] = 0;
+    for (const r of rows) out[r.employeeId] = parseFloat(r.total);
+    return out;
+  }
+
+  async getLoansByEmployee(employeeId: string, status?: "pending" | "settled"): Promise<StaffLoan[]> {
+    const conditions = [eq(staffLoans.employeeId, employeeId)];
+    if (status) conditions.push(eq(staffLoans.status, status));
+    return await db.select().from(staffLoans).where(and(...conditions)).orderBy(desc(staffLoans.createdAt));
+  }
+
+  async createStaffLoan(data: InsertStaffLoan): Promise<StaffLoan> {
+    const result = await db.insert(staffLoans).values(data).returning();
+    return result[0];
+  }
+
+  async updateStaffLoan(id: string, data: Partial<Pick<StaffLoan, "amount" | "note">>): Promise<StaffLoan | undefined> {
+    const updates: Record<string, unknown> = {};
+    if (data.amount !== undefined) updates.amount = String(data.amount);
+    if (data.note !== undefined) updates.note = data.note;
+    if (Object.keys(updates).length === 0) return this.getStaffLoan(id);
+    const result = await db.update(staffLoans).set(updates).where(eq(staffLoans.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteStaffLoan(id: string): Promise<boolean> {
+    const result = await db.delete(staffLoans).where(eq(staffLoans.id, id));
+    return result.rowCount != null && result.rowCount > 0;
+  }
+
+  async getStaffLoan(id: string): Promise<StaffLoan | undefined> {
+    const rows = await db.select().from(staffLoans).where(eq(staffLoans.id, id));
+    return rows[0];
+  }
+
+  async getPendingUnpaidLeaveTotalsByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>> {
+    if (employeeIds.length === 0) return {};
+    const rows = await db.select({
+      employeeId: staffUnpaidLeave.employeeId,
+      total: sql<string>`COALESCE(SUM(${staffUnpaidLeave.amount}::numeric), 0)`,
+    }).from(staffUnpaidLeave).where(and(eq(staffUnpaidLeave.status, "pending"), inArray(staffUnpaidLeave.employeeId, employeeIds))).groupBy(staffUnpaidLeave.employeeId);
+    const out: Record<string, number> = {};
+    for (const id of employeeIds) out[id] = 0;
+    for (const r of rows) out[r.employeeId] = parseFloat(r.total);
+    return out;
+  }
+
+  async getUnpaidLeaveByEmployee(employeeId: string, status?: "pending" | "applied"): Promise<StaffUnpaidLeave[]> {
+    const conditions = [eq(staffUnpaidLeave.employeeId, employeeId)];
+    if (status) conditions.push(eq(staffUnpaidLeave.status, status));
+    return await db.select().from(staffUnpaidLeave).where(and(...conditions)).orderBy(desc(staffUnpaidLeave.createdAt));
+  }
+
+  async createStaffUnpaidLeave(data: InsertStaffUnpaidLeave): Promise<StaffUnpaidLeave> {
+    const result = await db.insert(staffUnpaidLeave).values(data).returning();
+    return result[0];
+  }
+
+  async updateStaffUnpaidLeave(id: string, data: Partial<Pick<StaffUnpaidLeave, "amount" | "note">>): Promise<StaffUnpaidLeave | undefined> {
+    const updates: Record<string, unknown> = {};
+    if (data.amount !== undefined) updates.amount = String(data.amount);
+    if (data.note !== undefined) updates.note = data.note;
+    if (Object.keys(updates).length === 0) return this.getStaffUnpaidLeave(id);
+    const result = await db.update(staffUnpaidLeave).set(updates).where(eq(staffUnpaidLeave.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteStaffUnpaidLeave(id: string): Promise<boolean> {
+    const result = await db.delete(staffUnpaidLeave).where(eq(staffUnpaidLeave.id, id));
+    return result.rowCount != null && result.rowCount > 0;
+  }
+
+  async getStaffUnpaidLeave(id: string): Promise<StaffUnpaidLeave | undefined> {
+    const rows = await db.select().from(staffUnpaidLeave).where(eq(staffUnpaidLeave.id, id));
+    return rows[0];
+  }
+
+  async getLastCarriedByEmployeeIds(employeeIds: string[]): Promise<Record<string, number>> {
+    if (employeeIds.length === 0) return {};
+    const out: Record<string, number> = {};
+    for (const id of employeeIds) out[id] = 0;
+    const salaries = await db.select().from(staffSalaries).where(inArray(staffSalaries.employeeId, employeeIds)).orderBy(desc(staffSalaries.salaryDate));
+    const seen = new Set<string>();
+    for (const s of salaries) {
+      if (!seen.has(s.employeeId)) {
+        seen.add(s.employeeId);
+        out[s.employeeId] = parseFloat(s.carriedUnreleased ?? "0");
+      }
+    }
+    return out;
   }
 
   async getStaffSalariesWithEmployees(startDate?: Date, endDate?: Date): Promise<Array<StaffSalary & { employee: Employee | null }>> {

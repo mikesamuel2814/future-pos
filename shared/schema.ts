@@ -355,6 +355,116 @@ export const insertStaffSalarySchema = createInsertSchema(staffSalaries).omit({
 export type InsertStaffSalary = z.infer<typeof insertStaffSalarySchema>;
 export type StaffSalary = typeof staffSalaries.$inferSelect;
 
+export const staffDeductions = pgTable("staff_deductions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("pending"),
+  staffSalaryId: varchar("staff_salary_id"),
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+});
+
+export const insertStaffDeductionSchema = createInsertSchema(staffDeductions).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+  staffSalaryId: true,
+}).extend({
+  amount: z.union([z.string(), z.number()]).transform((v) => String(v)),
+});
+
+export type InsertStaffDeduction = z.infer<typeof insertStaffDeductionSchema>;
+export type StaffDeduction = typeof staffDeductions.$inferSelect;
+
+export const staffAdvances = pgTable("staff_advances", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  note: text("note"),
+  status: text("status").notNull().default("pending"),
+  staffSalaryId: varchar("staff_salary_id"),
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+});
+
+export const insertStaffAdvanceSchema = createInsertSchema(staffAdvances).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+  staffSalaryId: true,
+}).extend({
+  amount: z.union([z.string(), z.number()]).transform((v) => String(v)),
+});
+
+export type InsertStaffAdvance = z.infer<typeof insertStaffAdvanceSchema>;
+export type StaffAdvance = typeof staffAdvances.$inferSelect;
+
+export const staffPreviousDue = pgTable("staff_previous_due", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  note: text("note"),
+  status: text("status").notNull().default("pending"),
+  staffSalaryId: varchar("staff_salary_id"),
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+});
+
+export const insertStaffPreviousDueSchema = createInsertSchema(staffPreviousDue).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+  staffSalaryId: true,
+}).extend({
+  amount: z.union([z.string(), z.number()]).transform((v) => String(v)),
+});
+
+export type InsertStaffPreviousDue = z.infer<typeof insertStaffPreviousDueSchema>;
+export type StaffPreviousDue = typeof staffPreviousDue.$inferSelect;
+
+export const staffLoans = pgTable("staff_loans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  note: text("note"),
+  status: text("status").notNull().default("pending"),
+  staffSalaryId: varchar("staff_salary_id"),
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+});
+
+export const insertStaffLoanSchema = createInsertSchema(staffLoans).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+  staffSalaryId: true,
+}).extend({
+  amount: z.union([z.string(), z.number()]).transform((v) => String(v)),
+});
+
+export type InsertStaffLoan = z.infer<typeof insertStaffLoanSchema>;
+export type StaffLoan = typeof staffLoans.$inferSelect;
+
+export const staffUnpaidLeave = pgTable("staff_unpaid_leave", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  note: text("note"),
+  status: text("status").notNull().default("pending"),
+  staffSalaryId: varchar("staff_salary_id"),
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+});
+
+export const insertStaffUnpaidLeaveSchema = createInsertSchema(staffUnpaidLeave).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+  staffSalaryId: true,
+}).extend({
+  amount: z.union([z.string(), z.number()]).transform((v) => String(v)),
+});
+
+export type InsertStaffUnpaidLeave = z.infer<typeof insertStaffUnpaidLeaveSchema>;
+export type StaffUnpaidLeave = typeof staffUnpaidLeave.$inferSelect;
+
 export const positions = pgTable("positions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull().unique(),

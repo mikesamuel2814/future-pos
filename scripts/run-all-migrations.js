@@ -694,6 +694,111 @@ async function applyStaffSalaryDetailsMigration(client) {
   }
 }
 
+async function applyStaffDeductionsAdvancesMigration(client) {
+  console.log('\n📦 Applying staff_deductions and staff_advances tables...');
+  const migrationPath = join(__dirname, '..', 'migrations', '0016_staff_deductions_advances.sql');
+  try {
+    const migrationSQL = readFileSync(migrationPath, 'utf-8');
+    const statements = migrationSQL
+      .split(';')
+      .map((s) => s.replace(/--.*$/gm, '').trim())
+      .filter((s) => s.length > 0 && s.startsWith('CREATE'));
+    for (const statement of statements) {
+      try {
+        await client.query(statement + (statement.endsWith(';') ? '' : ';'));
+        const match = statement.match(/CREATE TABLE .*?(\w+)/i);
+        console.log(`✅ Created table ${match ? match[1] : 'staff_*'}`);
+      } catch (error) {
+        if (error.code === '42P07' || error.message?.includes('already exists')) {
+          logSkip('⚠️  Table already exists, skipping');
+        } else throw error;
+      }
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log(`⚠️  Migration file not found: ${migrationPath}, skipping`);
+    } else throw error;
+  }
+}
+
+async function applyStaffPreviousDueMigration(client) {
+  console.log('\n📦 Applying staff_previous_due table...');
+  const migrationPath = join(__dirname, '..', 'migrations', '0017_staff_previous_due.sql');
+  try {
+    const migrationSQL = readFileSync(migrationPath, 'utf-8');
+    const statements = migrationSQL
+      .split(';')
+      .map((s) => s.replace(/--.*$/gm, '').trim())
+      .filter((s) => s.length > 0 && s.startsWith('CREATE'));
+    for (const statement of statements) {
+      try {
+        await client.query(statement + (statement.endsWith(';') ? '' : ';'));
+        console.log('✅ Created table staff_previous_due');
+      } catch (error) {
+        if (error.code === '42P07' || error.message?.includes('already exists')) {
+          logSkip('⚠️  Table already exists, skipping');
+        } else throw error;
+      }
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log(`⚠️  Migration file not found: ${migrationPath}, skipping`);
+    } else throw error;
+  }
+}
+
+async function applyStaffLoansMigration(client) {
+  console.log('\n📦 Applying staff_loans table...');
+  const migrationPath = join(__dirname, '..', 'migrations', '0018_staff_loans.sql');
+  try {
+    const migrationSQL = readFileSync(migrationPath, 'utf-8');
+    const statements = migrationSQL
+      .split(';')
+      .map((s) => s.replace(/--.*$/gm, '').trim())
+      .filter((s) => s.length > 0 && s.startsWith('CREATE'));
+    for (const statement of statements) {
+      try {
+        await client.query(statement + (statement.endsWith(';') ? '' : ';'));
+        console.log('✅ Created table staff_loans');
+      } catch (error) {
+        if (error.code === '42P07' || error.message?.includes('already exists')) {
+          logSkip('⚠️  Table already exists, skipping');
+        } else throw error;
+      }
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log(`⚠️  Migration file not found: ${migrationPath}, skipping`);
+    } else throw error;
+  }
+}
+
+async function applyStaffUnpaidLeaveMigration(client) {
+  console.log('\n📦 Applying staff_unpaid_leave table...');
+  const migrationPath = join(__dirname, '..', 'migrations', '0019_staff_unpaid_leave.sql');
+  try {
+    const migrationSQL = readFileSync(migrationPath, 'utf-8');
+    const statements = migrationSQL
+      .split(';')
+      .map((s) => s.replace(/--.*$/gm, '').trim())
+      .filter((s) => s.length > 0 && s.startsWith('CREATE'));
+    for (const statement of statements) {
+      try {
+        await client.query(statement + (statement.endsWith(';') ? '' : ';'));
+        console.log('✅ Created table staff_unpaid_leave');
+      } catch (error) {
+        if (error.code === '42P07' || error.message?.includes('already exists')) {
+          logSkip('⚠️  Table already exists, skipping');
+        } else throw error;
+      }
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log(`⚠️  Migration file not found: ${migrationPath}, skipping`);
+    } else throw error;
+  }
+}
+
 async function applyPositionsDepartmentsMigration(client) {
   console.log('\n📦 Applying positions and departments migration...');
   const migrationPath = join(__dirname, '..', 'migrations', '0011_add_positions_departments.sql');
@@ -1444,6 +1549,26 @@ async function runAllMigrations() {
     await applyStaffSalaryDetailsMigration(client);
     await client.query('COMMIT');
 
+    // 16g. Apply staff_deductions and staff_advances tables
+    await client.query('BEGIN');
+    await applyStaffDeductionsAdvancesMigration(client);
+    await client.query('COMMIT');
+
+    // 16h. Apply staff_previous_due table
+    await client.query('BEGIN');
+    await applyStaffPreviousDueMigration(client);
+    await client.query('COMMIT');
+
+    // 16i. Apply staff_loans table
+    await client.query('BEGIN');
+    await applyStaffLoansMigration(client);
+    await client.query('COMMIT');
+
+    // 16j. Apply staff_unpaid_leave table
+    await client.query('BEGIN');
+    await applyStaffUnpaidLeaveMigration(client);
+    await client.query('COMMIT');
+
     // 17. Create admin user (run in separate transaction)
     await client.query('BEGIN');
     await createAdminUser(client);
@@ -1468,6 +1593,7 @@ async function runAllMigrations() {
     console.log('  - Size purchase prices field added to products');
     console.log('  - Due payment slips field added to due_payments');
     console.log('  - Staff salary details (deduct_reason, advance_amount, carried_unreleased, note) added to staff_salaries');
+    console.log('  - Staff deductions and advances tables created');
     console.log('  - Admin user created');
     console.log('\n🎉 Migration process finished!');
     
