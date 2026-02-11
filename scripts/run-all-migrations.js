@@ -673,6 +673,27 @@ async function applyOrderCustomerContactTypeMigration(client) {
   }
 }
 
+async function applyStaffSalaryDetailsMigration(client) {
+  console.log('\n📦 Applying staff_salaries details migration (deduct_reason, advance_amount, carried_unreleased, note)...');
+  const statements = [
+    `ALTER TABLE staff_salaries ADD COLUMN IF NOT EXISTS deduct_reason text`,
+    `ALTER TABLE staff_salaries ADD COLUMN IF NOT EXISTS advance_amount decimal(10,2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE staff_salaries ADD COLUMN IF NOT EXISTS carried_unreleased decimal(10,2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE staff_salaries ADD COLUMN IF NOT EXISTS note text`,
+  ];
+  for (const sql of statements) {
+    try {
+      await client.query(sql.endsWith(';') ? sql : sql + ';');
+      const col = sql.match(/ADD COLUMN IF NOT EXISTS (\w+)/)?.[1] || 'column';
+      console.log(`✅ staff_salaries.${col}`);
+    } catch (error) {
+      if (error.code === '42701' || error.message?.includes('already exists')) {
+        logSkip(`⚠️  staff_salaries column already exists, skipping`);
+      } else throw error;
+    }
+  }
+}
+
 async function applyPositionsDepartmentsMigration(client) {
   console.log('\n📦 Applying positions and departments migration...');
   const migrationPath = join(__dirname, '..', 'migrations', '0011_add_positions_departments.sql');
@@ -1418,6 +1439,11 @@ async function runAllMigrations() {
     await applyOrderCustomerContactTypeMigration(client);
     await client.query('COMMIT');
 
+    // 16f. Apply staff_salaries details (deduct_reason, advance_amount, carried_unreleased, note)
+    await client.query('BEGIN');
+    await applyStaffSalaryDetailsMigration(client);
+    await client.query('COMMIT');
+
     // 17. Create admin user (run in separate transaction)
     await client.query('BEGIN');
     await createAdminUser(client);
@@ -1441,6 +1467,7 @@ async function runAllMigrations() {
     console.log('  - Size pricing fields added to products and order_items');
     console.log('  - Size purchase prices field added to products');
     console.log('  - Due payment slips field added to due_payments');
+    console.log('  - Staff salary details (deduct_reason, advance_amount, carried_unreleased, note) added to staff_salaries');
     console.log('  - Admin user created');
     console.log('\n🎉 Migration process finished!');
     

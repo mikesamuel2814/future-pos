@@ -2440,6 +2440,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/employees/paginated", requirePermission("hrm.view"), async (req, res) => {
+    try {
+      const branchId = req.query.branchId as string | undefined;
+      const page = Math.max(1, parseInt(req.query.page as string) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 10));
+      const offset = (page - 1) * limit;
+      const search = (req.query.search as string)?.trim() || undefined;
+      const status = (req.query.status as string) || undefined;
+      const joinDateFrom = req.query.joinDateFrom ? new Date(req.query.joinDateFrom as string) : undefined;
+      const joinDateTo = req.query.joinDateTo ? new Date(req.query.joinDateTo as string) : undefined;
+      const { employees: list, total } = await storage.getEmployeesPaginated({ branchId, limit, offset, search, status, joinDateFrom, joinDateTo });
+      res.json({ employees: list, total, page, limit });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch employees" });
+    }
+  });
+
+  app.get("/api/employees/:id/salary-details", requirePermission("hrm.view"), async (req, res) => {
+    try {
+      const employee = await storage.getEmployee(req.params.id);
+      if (!employee) return res.status(404).json({ error: "Employee not found" });
+      const salaryHistory = await storage.getStaffSalariesByEmployee(req.params.id);
+      res.json({ employee, salaryHistory });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch employee salary details" });
+    }
+  });
+
   app.get("/api/employees/:id", requirePermission("hrm.view"), async (req, res) => {
     try {
       const employee = await storage.getEmployee(req.params.id);

@@ -187,6 +187,7 @@ export interface IStorage {
   deletePurchase(id: string): Promise<boolean>;
   
   getEmployees(branchId?: string | null): Promise<Employee[]>;
+  getEmployeesPaginated(opts: { branchId?: string | null; limit: number; offset: number; search?: string; status?: string; joinDateFrom?: Date; joinDateTo?: Date }): Promise<{ employees: Employee[]; total: number }>;
   getEmployee(id: string): Promise<Employee | undefined>;
   createEmployee(employee: InsertEmployee): Promise<Employee>;
   updateEmployee(id: string, employee: Partial<InsertEmployee>): Promise<Employee | undefined>;
@@ -220,6 +221,7 @@ export interface IStorage {
   deletePayroll(id: string): Promise<boolean>;
   
   getStaffSalaries(): Promise<StaffSalary[]>;
+  getStaffSalariesByEmployee(employeeId: string): Promise<StaffSalary[]>;
   getStaffSalary(id: string): Promise<StaffSalary | undefined>;
   createStaffSalary(salary: InsertStaffSalary): Promise<StaffSalary>;
   updateStaffSalary(id: string, salary: Partial<InsertStaffSalary>): Promise<StaffSalary | undefined>;
@@ -2115,6 +2117,39 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(employees);
   }
 
+  async getEmployeesPaginated(opts: { branchId?: string | null; limit: number; offset: number; search?: string; status?: string; joinDateFrom?: Date; joinDateTo?: Date }): Promise<{ employees: Employee[]; total: number }> {
+    const conditions: any[] = [];
+    if (opts.branchId) conditions.push(eq(employees.branchId, opts.branchId));
+    if (opts.status && opts.status !== "all") conditions.push(eq(employees.status, opts.status));
+    if (opts.joinDateFrom) conditions.push(gte(employees.joiningDate, opts.joinDateFrom));
+    if (opts.joinDateTo) {
+      const endOfDay = new Date(opts.joinDateTo);
+      endOfDay.setHours(23, 59, 59, 999);
+      conditions.push(lte(employees.joiningDate, endOfDay));
+    }
+    if (opts.search && opts.search.trim()) {
+      const term = `%${opts.search.trim().toLowerCase()}%`;
+      conditions.push(
+        or(
+          sql`LOWER(${employees.name}) LIKE ${term}`,
+          sql`LOWER(${employees.employeeId}) LIKE ${term}`,
+          sql`LOWER(${employees.position}) LIKE ${term}`,
+          sql`LOWER(${employees.department}) LIKE ${term}`,
+          sql`LOWER(COALESCE(${employees.email}, '')) LIKE ${term}`,
+          sql`LOWER(COALESCE(${employees.phone}, '')) LIKE ${term}`
+        )!
+      );
+    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const countResult = await db.select({ count: sql<number>`count(*)` }).from(employees).where(whereClause);
+    const total = Number(countResult[0]?.count ?? 0);
+    let query = db.select().from(employees).where(whereClause).orderBy(desc(employees.createdAt));
+    if (opts.limit > 0) query = query.limit(opts.limit) as any;
+    if (opts.offset > 0) query = query.offset(opts.offset) as any;
+    const list = await query;
+    return { employees: list, total };
+  }
+
   async getEmployee(id: string): Promise<Employee | undefined> {
     const result = await db.select().from(employees).where(eq(employees.id, id));
     return result[0];
@@ -2360,6 +2395,10 @@ export class DatabaseStorage implements IStorage {
   async getStaffSalary(id: string): Promise<StaffSalary | undefined> {
     const result = await db.select().from(staffSalaries).where(eq(staffSalaries.id, id));
     return result[0];
+  }
+
+  async getStaffSalariesByEmployee(employeeId: string): Promise<StaffSalary[]> {
+    return await db.select().from(staffSalaries).where(eq(staffSalaries.employeeId, employeeId)).orderBy(desc(staffSalaries.salaryDate));
   }
 
   async createStaffSalary(insertSalary: InsertStaffSalary): Promise<StaffSalary> {

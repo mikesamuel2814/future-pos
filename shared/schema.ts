@@ -333,7 +333,11 @@ export const staffSalaries = pgTable("staff_salaries", {
   salaryDate: timestamp("salary_date").notNull(),
   salaryAmount: decimal("salary_amount", { precision: 10, scale: 2 }).notNull(),
   deductSalary: decimal("deduct_salary", { precision: 10, scale: 2 }).notNull().default("0"),
+  deductReason: text("deduct_reason"),
+  advanceAmount: decimal("advance_amount", { precision: 10, scale: 2 }).default("0"),
+  carriedUnreleased: decimal("carried_unreleased", { precision: 10, scale: 2 }).default("0"),
   totalSalary: decimal("total_salary", { precision: 10, scale: 2 }).notNull(),
+  note: text("note"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
@@ -342,6 +346,10 @@ export const insertStaffSalarySchema = createInsertSchema(staffSalaries).omit({
   createdAt: true,
 }).extend({
   salaryDate: z.coerce.date(),
+  deductReason: z.string().optional().nullable(),
+  advanceAmount: z.string().optional().nullable(),
+  carriedUnreleased: z.string().optional().nullable(),
+  note: z.string().optional().nullable(),
 });
 
 export type InsertStaffSalary = z.infer<typeof insertStaffSalarySchema>;

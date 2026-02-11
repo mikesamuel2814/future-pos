@@ -29,6 +29,11 @@ export default function StaffSalaryPage() {
   const { hasPermission } = usePermissions();
   const [activeTab, setActiveTab] = useState("staff");
   const [searchTerm, setSearchTerm] = useState("");
+  const [staffPage, setStaffPage] = useState(1);
+  const [staffLimit, setStaffLimit] = useState(10);
+  const [staffStatusFilter, setStaffStatusFilter] = useState<string>("all");
+  const [staffJoinDateFrom, setStaffJoinDateFrom] = useState<string>("");
+  const [staffJoinDateTo, setStaffJoinDateTo] = useState<string>("");
   const [viewEmployee, setViewEmployee] = useState<Employee | null>(null);
   const [editEmployee, setEditEmployee] = useState<Employee | null>(null);
   const [deleteEmployeeId, setDeleteEmployeeId] = useState<string | null>(null);
@@ -65,6 +70,27 @@ export default function StaffSalaryPage() {
 
   const { data: employees = EMPTY_EMPLOYEES, isLoading: employeesLoading } = useQuery<Employee[]>({
     queryKey: ["/api/employees"],
+  });
+
+  const staffPaginatedParams = () => {
+    const params = new URLSearchParams();
+    params.set("page", String(staffPage));
+    params.set("limit", String(staffLimit));
+    if (searchTerm.trim()) params.set("search", searchTerm.trim());
+    if (staffStatusFilter && staffStatusFilter !== "all") params.set("status", staffStatusFilter);
+    if (staffJoinDateFrom) params.set("joinDateFrom", staffJoinDateFrom);
+    if (staffJoinDateTo) params.set("joinDateTo", staffJoinDateTo);
+    return params.toString();
+  };
+
+  const { data: staffPaginated, isLoading: staffPaginatedLoading } = useQuery<{ employees: Employee[]; total: number; page: number; limit: number }>({
+    queryKey: ["/api/employees/paginated", staffPaginatedParams()],
+    queryFn: async () => {
+      const res = await fetch(`/api/employees/paginated?${staffPaginatedParams()}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch staff");
+      return res.json();
+    },
+    enabled: activeTab === "staff",
   });
 
   // When months selected, use exact date-time range in local time (fixes timezone)
@@ -117,6 +143,7 @@ export default function StaffSalaryPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employees/paginated"] });
       setShowAddDialog(false);
       resetForm();
       toast({ title: "Success", description: "Staff added successfully" });
@@ -135,6 +162,7 @@ export default function StaffSalaryPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employees/paginated"] });
       setEditEmployee(null);
       toast({ title: "Success", description: "Staff updated successfully" });
     },
@@ -147,6 +175,7 @@ export default function StaffSalaryPage() {
     mutationFn: async (id: string) => apiRequest("DELETE", `/api/employees/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employees/paginated"] });
       setDeleteEmployeeId(null);
       toast({ title: "Success", description: "Staff deleted successfully" });
     },
@@ -235,6 +264,7 @@ export default function StaffSalaryPage() {
     },
     onSuccess: (data: { success: number; failed: number }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/staff-salaries/with-employees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
       setSelectedIds(new Set());
       setShowBulkReleaseConfirm(false);
@@ -269,6 +299,22 @@ export default function StaffSalaryPage() {
       (e.department && e.department.toLowerCase().includes(term)) ||
       (e.email && e.email.toLowerCase().includes(term))
     );
+  });
+
+  const staffList = activeTab === "staff" ? (staffPaginated?.employees ?? []) : filteredStaff;
+  const staffTotal = activeTab === "staff" ? (staffPaginated?.total ?? 0) : filteredStaff.length;
+  const staffPages = activeTab === "staff" ? Math.max(1, Math.ceil((staffPaginated?.total ?? 0) / (staffPaginated?.limit ?? staffLimit))) : 1;
+  const staffLoading = activeTab === "staff" ? staffPaginatedLoading : employeesLoading;
+
+  const { data: salaryDetails, isLoading: salaryDetailsLoading } = useQuery<{ employee: Employee; salaryHistory: StaffSalary[] }>({
+    queryKey: ["/api/employees", viewEmployee?.id, "salary-details"],
+    queryFn: async () => {
+      if (!viewEmployee?.id) throw new Error("No employee");
+      const res = await fetch(`/api/employees/${viewEmployee.id}/salary-details`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load details");
+      return res.json();
+    },
+    enabled: !!viewEmployee?.id,
   });
 
   const toggleSelect = (id: string) => {
@@ -338,6 +384,7 @@ export default function StaffSalaryPage() {
         .then((res: any) => res.json?.() ?? res)
         .then((result: { success: number; failed: number }) => {
           queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/employees/paginated"] });
           setImportJson("");
           toast({ title: "Import done", description: `Imported ${result.success}, failed ${result.failed}` });
         })
@@ -568,6 +615,7 @@ export default function StaffSalaryPage() {
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Import failed"))))
       .then((result: { success: number; failed: number }) => {
         queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/employees/paginated"] });
         setImportJson("");
         toast({ title: "Import done", description: `Imported ${result.success}, failed ${result.failed}` });
       })
@@ -718,10 +766,11 @@ export default function StaffSalaryPage() {
                 <CardDescription>Add, edit, import/export staff. Click view for profile.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="flex flex-col gap-3">
                 <div className="flex flex-col sm:flex-row gap-2">
                   <div className="relative flex-1">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <Input placeholder="Search by name, ID, position, department..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9" />
+                    <Input placeholder="Search by name, ID, position, department..." value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); if (activeTab === "staff") setStaffPage(1); }} className="pl-9" />
                   </div>
                   {hasPermission("hrm.create") && (
                     <>
@@ -749,6 +798,32 @@ export default function StaffSalaryPage() {
                     </>
                   )}
                 </div>
+                {activeTab === "staff" && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Select value={staffStatusFilter} onValueChange={(v) => { setStaffStatusFilter(v); setStaffPage(1); }}>
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue placeholder="Status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All status</SelectItem>
+                        <SelectItem value="active">Active</SelectItem>
+                        <SelectItem value="inactive">Inactive</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <div className="flex items-center gap-1">
+                      <Label className="text-muted-foreground text-xs whitespace-nowrap">Join from</Label>
+                      <Input type="date" className="w-[140px]" value={staffJoinDateFrom} onChange={(e) => { setStaffJoinDateFrom(e.target.value); setStaffPage(1); }} />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Label className="text-muted-foreground text-xs whitespace-nowrap">Join to</Label>
+                      <Input type="date" className="w-[140px]" value={staffJoinDateTo} onChange={(e) => { setStaffJoinDateTo(e.target.value); setStaffPage(1); }} />
+                    </div>
+                    {(staffJoinDateFrom || staffJoinDateTo || staffStatusFilter !== "all") && (
+                      <Button variant="ghost" size="sm" onClick={() => { setStaffStatusFilter("all"); setStaffJoinDateFrom(""); setStaffJoinDateTo(""); setStaffPage(1); }}>Clear filters</Button>
+                    )}
+                  </div>
+                )}
+                </div>
                 {importJson !== "" && (
                   <div className="space-y-2">
                     <Label>Paste JSON, or download sample CSV/Excel, fill in Excel, then use &quot;Import from CSV or Excel&quot; to upload .csv or .xlsx.</Label>
@@ -773,14 +848,14 @@ export default function StaffSalaryPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {employeesLoading ? (
+                      {staffLoading ? (
                         <TableRow><TableCell colSpan={7} className="text-center py-8">Loading...</TableCell></TableRow>
-                      ) : filteredStaff.length === 0 ? (
+                      ) : staffList.length === 0 ? (
                         <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No staff found</TableCell></TableRow>
                       ) : (
-                        filteredStaff.map((emp) => (
-                          <TableRow key={emp.id}>
-                            <TableCell className="font-mono text-xs">{emp.employeeId}</TableCell>
+                        staffList.map((emp) => (
+                          <TableRow key={emp.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setViewEmployee(emp)}>
+                            <TableCell className="font-mono text-xs" onClick={(e) => e.stopPropagation()}>{emp.employeeId}</TableCell>
                             <TableCell>
                               <div className="flex items-center gap-2">
                                 <div className="flex-shrink-0 w-8 h-8 rounded-full overflow-hidden border bg-muted flex items-center justify-center">
@@ -797,7 +872,7 @@ export default function StaffSalaryPage() {
                             <TableCell>{emp.department}</TableCell>
                             <TableCell>{formatCurrency(emp.salary)}</TableCell>
                             <TableCell>{emp.status}</TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                               <Button variant="ghost" size="icon" onClick={() => setViewEmployee(emp)} title="View profile">
                                 <Eye className="h-4 w-4" />
                               </Button>
@@ -818,6 +893,31 @@ export default function StaffSalaryPage() {
                     </TableBody>
                   </Table>
                 </div>
+                {activeTab === "staff" && staffTotal > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span>Per page</span>
+                      <Select value={String(staffLimit)} onValueChange={(v) => { setStaffLimit(Number(v)); setStaffPage(1); }}>
+                        <SelectTrigger className="w-[70px] h-8">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="10">10</SelectItem>
+                          <SelectItem value="25">25</SelectItem>
+                          <SelectItem value="50">50</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <span>
+                        Showing {((staffPage - 1) * (staffPaginated?.limit ?? staffLimit)) + 1}–{Math.min(staffPage * (staffPaginated?.limit ?? staffLimit), staffTotal)} of {staffTotal}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button variant="outline" size="sm" disabled={staffPage <= 1} onClick={() => setStaffPage((p) => p - 1)}>Prev</Button>
+                      <span className="px-2 text-sm">Page {staffPage} of {staffPages}</span>
+                      <Button variant="outline" size="sm" disabled={staffPage >= staffPages} onClick={() => setStaffPage((p) => p + 1)}>Next</Button>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -1069,35 +1169,95 @@ export default function StaffSalaryPage() {
         </Tabs>
       </div>
 
-      {/* Profile view modal */}
+      {/* Profile view modal with salary history and actions */}
       <Dialog open={!!viewEmployee} onOpenChange={(open) => !open && setViewEmployee(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Staff Profile</DialogTitle>
-            <DialogDescription>View staff details</DialogDescription>
+            <DialogTitle>Staff Profile & Salary Details</DialogTitle>
+            <DialogDescription>View staff details, salary history, deductions, and advance. Unreleased salary is carried to the next month.</DialogDescription>
           </DialogHeader>
           {viewEmployee && (
             <div className="space-y-4">
-              <div className="flex justify-center">
-                {viewEmployee.photoUrl ? (
-                  <img src={viewEmployee.photoUrl} alt={viewEmployee.name} className="w-24 h-24 rounded-full object-cover border-2" />
-                ) : (
-                  <div className="w-24 h-24 rounded-full bg-muted flex items-center justify-center">
-                    <User className="w-12 h-12 text-muted-foreground" />
+              {salaryDetailsLoading ? (
+                <div className="py-8 text-center text-muted-foreground">Loading details…</div>
+              ) : (
+                <>
+                  <div className="flex gap-4 flex-wrap">
+                    <div className="flex justify-center flex-shrink-0">
+                      {(salaryDetails?.employee ?? viewEmployee).photoUrl ? (
+                        <img src={(salaryDetails?.employee ?? viewEmployee).photoUrl!} alt={(salaryDetails?.employee ?? viewEmployee).name} className="w-24 h-24 rounded-full object-cover border-2" />
+                      ) : (
+                        <div className="w-24 h-24 rounded-full bg-muted flex items-center justify-center">
+                          <User className="w-12 h-12 text-muted-foreground" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid gap-1 text-sm flex-1 min-w-0">
+                      <p><span className="font-medium">Name:</span> {(salaryDetails?.employee ?? viewEmployee).name}</p>
+                      <p><span className="font-medium">Employee ID:</span> {(salaryDetails?.employee ?? viewEmployee).employeeId}</p>
+                      <p><span className="font-medium">Position:</span> {(salaryDetails?.employee ?? viewEmployee).position}</p>
+                      <p><span className="font-medium">Department:</span> {(salaryDetails?.employee ?? viewEmployee).department}</p>
+                      {(salaryDetails?.employee ?? viewEmployee).email && <p><span className="font-medium">Email:</span> {(salaryDetails?.employee ?? viewEmployee).email}</p>}
+                      {(salaryDetails?.employee ?? viewEmployee).phone && <p><span className="font-medium">Phone:</span> {(salaryDetails?.employee ?? viewEmployee).phone}</p>}
+                      <p><span className="font-medium">Joining date:</span> {(salaryDetails?.employee ?? viewEmployee).joiningDate ? format(new Date((salaryDetails?.employee ?? viewEmployee).joiningDate!), "PPP") : "—"}</p>
+                      <p><span className="font-medium">Base salary:</span> {formatCurrency((salaryDetails?.employee ?? viewEmployee).salary)}</p>
+                      <p><span className="font-medium">Status:</span> {(salaryDetails?.employee ?? viewEmployee).status}</p>
+                    </div>
                   </div>
-                )}
-              </div>
-              <div className="grid gap-2 text-sm">
-                <p><span className="font-medium">Name:</span> {viewEmployee.name}</p>
-                <p><span className="font-medium">Employee ID:</span> {viewEmployee.employeeId}</p>
-                <p><span className="font-medium">Position:</span> {viewEmployee.position}</p>
-                <p><span className="font-medium">Department:</span> {viewEmployee.department}</p>
-                {viewEmployee.email && <p><span className="font-medium">Email:</span> {viewEmployee.email}</p>}
-                {viewEmployee.phone && <p><span className="font-medium">Phone:</span> {viewEmployee.phone}</p>}
-                <p><span className="font-medium">Joining date:</span> {viewEmployee.joiningDate ? format(new Date(viewEmployee.joiningDate), "PPP") : "—"}</p>
-                <p><span className="font-medium">Salary:</span> {formatCurrency(viewEmployee.salary)}</p>
-                <p><span className="font-medium">Status:</span> {viewEmployee.status}</p>
-              </div>
+                  <div>
+                    <h4 className="font-medium mb-2">Salary history (deductions, advance, carried unreleased)</h4>
+                    <div className="border rounded-lg overflow-auto max-h-[280px]">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Base</TableHead>
+                            <TableHead>Deduction</TableHead>
+                            <TableHead>Reason</TableHead>
+                            <TableHead>Advance</TableHead>
+                            <TableHead>Carried</TableHead>
+                            <TableHead>Total</TableHead>
+                            <TableHead>Note</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {!salaryDetails?.salaryHistory?.length ? (
+                            <TableRow><TableCell colSpan={8} className="text-center py-4 text-muted-foreground">No salary releases yet</TableCell></TableRow>
+                          ) : (
+                            salaryDetails.salaryHistory.map((s) => (
+                              <TableRow key={s.id}>
+                                <TableCell>{format(new Date(s.salaryDate), "PP")}</TableCell>
+                                <TableCell>{formatCurrency(s.salaryAmount)}</TableCell>
+                                <TableCell>{formatCurrency(s.deductSalary ?? "0")}</TableCell>
+                                <TableCell className="max-w-[120px] truncate" title={s.deductReason ?? ""}>{s.deductReason ?? "—"}</TableCell>
+                                <TableCell>{formatCurrency(s.advanceAmount ?? "0")}</TableCell>
+                                <TableCell>{formatCurrency(s.carriedUnreleased ?? "0")}</TableCell>
+                                <TableCell>{formatCurrency(s.totalSalary)}</TableCell>
+                                <TableCell className="max-w-[100px] truncate" title={s.note ?? ""}>{s.note ?? "—"}</TableCell>
+                              </TableRow>
+                            ))
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                  <DialogFooter className="flex flex-wrap gap-2 sm:gap-0">
+                    {hasPermission("hrm.edit") && (
+                      <Button variant="outline" onClick={() => { setEditEmployee(salaryDetails?.employee ?? viewEmployee); setViewEmployee(null); }}>
+                        <Edit className="h-4 w-4 mr-2" />
+                        Edit staff
+                      </Button>
+                    )}
+                    {hasPermission("hrm.create") && (
+                      <Button onClick={() => { setViewEmployee(null); setActiveTab("salary"); setSelectedIds(new Set([viewEmployee.id])); }}>
+                        <DollarSign className="h-4 w-4 mr-2" />
+                        Release salary
+                      </Button>
+                    )}
+                    <Button variant="secondary" onClick={() => setViewEmployee(null)}>Close</Button>
+                  </DialogFooter>
+                </>
+              )}
             </div>
           )}
         </DialogContent>
