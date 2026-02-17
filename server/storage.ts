@@ -530,9 +530,13 @@ export class DatabaseStorage implements IStorage {
       conditions.push(or(eq(products.branchId, branchId), isNull(products.branchId)));
     }
     
-    // Category filter
+    // Category filter (__none__ = products with no category)
     if (categoryId) {
-      conditions.push(eq(products.categoryId, categoryId));
+      if (categoryId === "__none__") {
+        conditions.push(or(isNull(products.categoryId), eq(products.categoryId, "")));
+      } else {
+        conditions.push(eq(products.categoryId, categoryId));
+      }
     }
     
     // Search filter
@@ -3128,9 +3132,13 @@ export class DatabaseStorage implements IStorage {
       sql`CAST(${products.quantity} AS DECIMAL) <= ${threshold}`
     ));
     
-    // Category filter
+    // Category filter (__none__ = products with no category)
     if (categoryId) {
-      conditions.push(eq(products.categoryId, categoryId));
+      if (categoryId === "__none__") {
+        conditions.push(or(isNull(products.categoryId), eq(products.categoryId, "")));
+      } else {
+        conditions.push(eq(products.categoryId, categoryId));
+      }
     }
     
     // Search filter
